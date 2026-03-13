@@ -263,7 +263,11 @@ def search_existing_page(title, parent_id):
     return None  # No existing page found
 
 def get_existing_page_content(page_id):
-    """Fetch the current content of a Notion page."""
+    """Fetch the current content of a Notion page.
+
+    Returns a list of blocks on success, or None when the page cannot be found
+    (404) or is archived — callers should treat None as "page needs recreating".
+    """
     url = f"https://api.notion.com/v1/blocks/{page_id}/children"
     response = session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
 
@@ -271,7 +275,7 @@ def get_existing_page_content(page_id):
         return response.json().get("results", [])
     else:
         print(f"{RED}Error fetching page content: {response.status_code}, {response.text}{RESET}")
-        return []
+        return None
 
 def archive_page_in_notion(page_id):
     """Archives a Notion page instead of deleting it."""
@@ -533,19 +537,28 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
             action = "[dry] Would sync" if dry_run else "Syncing"
             print(f"{YELLOW}Page '{file_name}' content has changed. {action}...{RESET}")
             existing_blocks = get_existing_page_content(existing_page_id)
-            status = sync_page_blocks(existing_page_id, existing_blocks, blocks, dry_run=dry_run)
 
-            if status == "failed":
-                return ("failed", existing_page_id)
-
-            if not dry_run:
-                state.set_page_hash(state_key, current_hash)
+            # None means the page is gone or archived on Notion's side.
+            # Drop the stale state entry and fall through to re-creation.
+            if existing_blocks is None:
+                print(f"{YELLOW}Page '{file_name}' not found in Notion (archived or deleted). Re-creating...{RESET}")
+                state.remove_page(state_key)
                 state.save()
-            return ("updated", existing_page_id)
+                existing_page_id = None
+                # fall through to the creation block below
+            else:
+                status = sync_page_blocks(existing_page_id, existing_blocks, blocks, dry_run=dry_run)
+                if status == "failed":
+                    return ("failed", existing_page_id)
+                if not dry_run:
+                    state.set_page_hash(state_key, current_hash)
+                    state.save()
+                return ("updated", existing_page_id)
         else:
             # Phase 1: page already known, nothing to do.
             return ("skipped", existing_page_id)
-    else:
+
+    if not existing_page_id:
         # Create a new page.
         if dry_run:
             print(f"{YELLOW}[dry] Would create: '{page_title}' ({len(blocks)} blocks){RESET}")
