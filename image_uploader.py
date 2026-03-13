@@ -22,13 +22,14 @@ def _sha256(path: str) -> str:
     return h.hexdigest()
 
 
-def upload_image_to_notion(image_path: str) -> tuple[str, bool] | None:
+def upload_image_to_notion(image_path: str, dry_run: bool = False) -> tuple[str, bool] | None:
     """Upload a local image to Notion via the File Upload API.
 
     Returns (file_upload_id, from_cache) on success, or None on failure.
     from_cache=True means the image was unchanged and served from the local cache.
     from_cache=False means the image was freshly uploaded.
     Uses a local SHA-256 cache (via sync_state) to skip unchanged files.
+    In dry_run mode, skips the actual upload and returns a placeholder.
     """
     if not os.path.exists(image_path):
         print(f"{YELLOW}Image not found: {image_path}{RESET}")
@@ -43,6 +44,10 @@ def upload_image_to_notion(image_path: str) -> tuple[str, bool] | None:
     if cached and cached.get("sha256") == current_hash:
         print(f"{YELLOW}Image unchanged, reusing upload: {os.path.basename(image_path)}{RESET}")
         return cached["file_upload_id"], True
+
+    if dry_run:
+        print(f"{YELLOW}[dry] Would upload image: {os.path.basename(image_path)}{RESET}")
+        return "dry-run-placeholder", False
 
     # Step 1: Create a File Upload object to get an upload URL + ID.
     create_response = requests.post(

@@ -112,12 +112,14 @@ def _insert_blocks_after(page_id: str, blocks: list, after_id: str | None) -> bo
     return True
 
 
-def sync_page_blocks(page_id: str, existing_blocks: list, new_blocks: list) -> str:
+def sync_page_blocks(page_id: str, existing_blocks: list, new_blocks: list,
+                     dry_run: bool = False) -> str:
     """Apply a minimal diff between existing Notion blocks and new blocks.
 
     Unchanged blocks keep their Notion IDs (preserving comments/reactions).
     Only changed, inserted, or deleted blocks are touched.
     Returns 'updated' or 'failed'.
+    In dry_run mode, computes and prints the diff but makes no API calls.
     """
     old_fps = [_block_fingerprint(b) for b in existing_blocks]
     new_fps = [_block_fingerprint(b) for b in new_blocks]
@@ -129,6 +131,17 @@ def sync_page_blocks(page_id: str, existing_blocks: list, new_blocks: list) -> s
         tag in ("insert", "replace") and i1 == 0 and existing_blocks
         for tag, i1, i2, j1, j2 in ops
     )
+
+    if dry_run:
+        if needs_insert_at_start:
+            print(f"{YELLOW}  [dry] Would rewrite full page ({len(new_blocks)} blocks){RESET}")
+        else:
+            keep   = sum(i2 - i1 for tag, i1, i2, j1, j2 in ops if tag == "equal")
+            delete = sum(i2 - i1 for tag, i1, i2, j1, j2 in ops if tag in ("delete", "replace"))
+            insert = sum(j2 - j1 for tag, i1, i2, j1, j2 in ops if tag in ("insert", "replace"))
+            print(f"{YELLOW}  [dry] diff — keep: {keep}, delete: {delete}, insert: {insert}{RESET}")
+        return "updated"
+
     if needs_insert_at_start:
         print(f"{YELLOW}Insertion before first block detected; falling back to full page rewrite.{RESET}")
         delete_existing_content(page_id)
@@ -284,7 +297,7 @@ def reconcile_state(local_md_files):
     print(f"{GREEN}Reconciled {len(state.all_pages())} page(s) and {len(state.all_folders())} folder(s) from Notion.{RESET}")
 
 
-def delete_notion_page_if_missing(local_md_files):
+def delete_notion_page_if_missing(local_md_files, dry_run: bool = False):
     """Archives Notion pages that correspond to missing local Markdown files."""
     local_file_names = {os.path.relpath(f, BASE_DIR) for f in local_md_files}
 
@@ -301,22 +314,30 @@ def delete_notion_page_if_missing(local_md_files):
     # Archive pages tracked in state that no longer exist locally.
     for local_path, page_id in list(state.all_pages().items()):
         if local_path not in local_file_names:
-            print(f"{RED}Detected missing file: {local_path} | Archiving Notion page...{RESET}")
-            result = archive_page_in_notion(page_id)
-            if result == "deleted":
-                state.remove_page(local_path)
+            if dry_run:
+                print(f"{YELLOW}[dry] Would archive missing page: {local_path}{RESET}")
                 deleted_pages += 1
+            else:
+                print(f"{RED}Detected missing file: {local_path} | Archiving Notion page...{RESET}")
+                result = archive_page_in_notion(page_id)
+                if result == "deleted":
+                    state.remove_page(local_path)
+                    deleted_pages += 1
 
     # Archive folder pages tracked in state that are no longer needed.
     for folder_path, folder_page_id in list(state.all_folders().items()):
         if folder_path not in local_folders:
             child_pages = get_existing_child_pages(folder_page_id)
             if not child_pages:
-                print(f"{RED}Folder {folder_path} is now empty. Archiving Notion folder page...{RESET}")
-                archive_page_in_notion(folder_page_id)
-                state.remove_folder(folder_path)
+                if dry_run:
+                    print(f"{YELLOW}[dry] Would archive empty folder: {folder_path}{RESET}")
+                else:
+                    print(f"{RED}Folder {folder_path} is now empty. Archiving Notion folder page...{RESET}")
+                    archive_page_in_notion(folder_page_id)
+                    state.remove_folder(folder_path)
 
-    state.save()
+    if not dry_run:
+        state.save()
     return deleted_pages
 
 
@@ -375,11 +396,12 @@ def create_or_update_notion_page(title, parent_id, blocks, is_folder=False):
         print(f"{RED}Failed to create Notion page: {title} | Error: {response.status_code} - {response.text}{RESET}")
         return None
 
-def get_or_create_folder_page(folder_path):
+def get_or_create_folder_page(folder_path, dry_run: bool = False):
     """Ensure Notion folder pages match directory structure recursively.
 
     Uses state for lookup (keyed by full relative path) to avoid name collisions
     between folders at different nesting levels.
+    In dry_run mode, skips creation and returns the root page ID as a placeholder.
     """
     parent_id = state.get_notion_root_page_id()
     folders = folder_path.split(os.sep)
@@ -391,6 +413,9 @@ def get_or_create_folder_page(folder_path):
         if cached_id:
             parent_id = cached_id
         else:
+            if dry_run:
+                print(f"{YELLOW}  [dry] Would create folder: {accumulated}{RESET}")
+                continue
             folder_id = search_existing_page(folder, parent_id)
             if not folder_id:
                 folder_id = create_or_update_notion_page(folder, parent_id, [], is_folder=True)
@@ -421,18 +446,20 @@ def upload_blocks_to_notion(page_id, blocks):
 
     return "updated"
 
-def upload_markdown_file_to_notion(file_path, update_content=False, new_content=None):
+def upload_markdown_file_to_notion(file_path, update_content=False, new_content=None,
+                                   dry_run: bool = False):
     """Upload a Markdown file as a Notion page inside its folder structure.
 
     If update_content is False, a minimal content is uploaded (or the page is created if missing).
     If update_content is True, then the file’s content is used, converted to Notion blocks, and the page is updated if
     changes are detected.
+    In dry_run mode, computes all diffs and prints what would change, but makes no writes.
     """
     file_name = os.path.basename(file_path)
     base_path = os.path.dirname(file_path)
     relative_path = os.path.relpath(os.path.dirname(file_path), BASE_DIR)
 
-    parent_id = get_or_create_folder_page(relative_path) if relative_path != "." else state.get_notion_root_page_id()
+    parent_id = get_or_create_folder_page(relative_path, dry_run=dry_run) if relative_path != "." else state.get_notion_root_page_id()
 
     # Read markdown content.
     try:
@@ -455,7 +482,7 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
 
     # Generate blocks.
     if update_content:
-        blocks = md_to_notion_blocks(md_content, base_path=base_path)
+        blocks = md_to_notion_blocks(md_content, base_path=base_path, dry_run=dry_run)
         # Drop the first block if it's the H1 that was promoted to the page title,
         # so it doesn't appear as a duplicate heading inside the page.
         if (blocks and blocks[0].get("type") == "heading_1"):
@@ -488,21 +515,27 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
                 print(f"Page '{file_name}' unchanged. Skipping.")
                 return ("skipped", existing_page_id)
 
-            print(f"{YELLOW}Page '{file_name}' content has changed. Syncing...{RESET}")
+            action = "[dry] Would sync" if dry_run else "Syncing"
+            print(f"{YELLOW}Page '{file_name}' content has changed. {action}...{RESET}")
             existing_blocks = get_existing_page_content(existing_page_id)
-            status = sync_page_blocks(existing_page_id, existing_blocks, blocks)
+            status = sync_page_blocks(existing_page_id, existing_blocks, blocks, dry_run=dry_run)
 
             if status == "failed":
                 return ("failed", existing_page_id)
 
-            state.set_page_hash(state_key, current_hash)
-            state.save()
+            if not dry_run:
+                state.set_page_hash(state_key, current_hash)
+                state.save()
             return ("updated", existing_page_id)
         else:
             # Phase 1: page already known, nothing to do.
             return ("skipped", existing_page_id)
     else:
         # Create a new page.
+        if dry_run:
+            print(f"{YELLOW}[dry] Would create: '{page_title}' ({len(blocks)} blocks){RESET}")
+            return ("created", None)
+
         print(f"{GREEN}Creating new Notion page: {page_title}{RESET}")
         response = session.post(
             "https://api.notion.com/v1/pages",
