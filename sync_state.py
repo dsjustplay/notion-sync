@@ -14,7 +14,7 @@ class SyncState:
     """Persistent local state mapping local paths to Notion IDs and image upload cache."""
 
     def __init__(self):
-        self._data = {"pages": {}, "folders": {}, "images": {}, "page_hashes": {}, "notion_root_page_id": None}
+        self._data = {"pages": {}, "folders": {}, "images": {}, "notion_root_page_id": None}
 
     def load(self):
         """Load state from disk. Safe to call even if the file does not exist yet."""
@@ -22,8 +22,6 @@ class SyncState:
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
                 self._data = json.load(f)
-            # Backward-compat: add keys introduced after the initial release.
-            self._data.setdefault("page_hashes", {})
             self._data.setdefault("notion_root_page_id", None)
         return self
 
@@ -39,27 +37,27 @@ class SyncState:
     # ------------------------------------------------------------------
 
     def get_page_id(self, local_path: str) -> str | None:
-        return self._data["pages"].get(local_path)
+        entry = self._data["pages"].get(local_path)
+        return entry["notion_id"] if entry else None
 
     def set_page_id(self, local_path: str, page_id: str):
-        self._data["pages"][local_path] = page_id
+        entry = self._data["pages"].setdefault(local_path, {"notion_id": None, "content_hash": None})
+        entry["notion_id"] = page_id
 
     def remove_page(self, local_path: str):
         self._data["pages"].pop(local_path, None)
-        self._data["page_hashes"].pop(local_path, None)
 
     def all_pages(self) -> dict:
-        return dict(self._data["pages"])
-
-    # ------------------------------------------------------------------
-    # Page content hashes  (key: relative local path, value: SHA-256 of markdown)
-    # ------------------------------------------------------------------
+        """Returns {local_path: notion_id} for all tracked pages."""
+        return {k: v["notion_id"] for k, v in self._data["pages"].items()}
 
     def get_page_hash(self, local_path: str) -> str | None:
-        return self._data["page_hashes"].get(local_path)
+        entry = self._data["pages"].get(local_path)
+        return entry["content_hash"] if entry else None
 
     def set_page_hash(self, local_path: str, content_hash: str):
-        self._data["page_hashes"][local_path] = content_hash
+        entry = self._data["pages"].setdefault(local_path, {"notion_id": None, "content_hash": None})
+        entry["content_hash"] = content_hash
 
     # ------------------------------------------------------------------
     # Notion root page ID  (stored here so the token is the only thing in .env)
