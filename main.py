@@ -1,5 +1,6 @@
 import argparse
 import os
+from urllib.parse import quote
 
 # ---------------------------------------------------------------------------
 # Parse arguments and configure BASE_DIR *before* importing any module that
@@ -111,7 +112,7 @@ def sync_markdown_to_notion():
 
         if page_id:
             filename = os.path.basename(md_file)
-            notion_url = f"https://www.notion.so/{filename}-{page_id.replace('-', '')}"
+            notion_url = f"https://www.notion.so/{quote(filename)}-{page_id.replace('-', '')}"
             md_to_notion[filename] = notion_url
             print(f"Mapped {filename} -> {notion_url}")
         elif not dry_run:
