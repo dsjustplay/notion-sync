@@ -2,3 +2,5 @@
 .idea/
 venv/
 .env
+docs/
+sync_state.json

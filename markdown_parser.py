@@ -1,8 +1,8 @@
 import os
 import re
 from config import MAX_BLOCK_TEXT_LENGTH, SUPPORTED_LANGUAGES, RED, GREEN, YELLOW, RESET
-from image_uploader import upload_image_to_dropbox
-from urllib.parse import urlparse
+from image_uploader import upload_image_to_notion
+from urllib.parse import urlparse, unquote
 
 # Module-level constants
 MAX_NESTING_DEPTH = 3
@@ -31,15 +31,16 @@ def split_text_into_chunks(text, max_length=MAX_BLOCK_TEXT_LENGTH):
 
 def check_for_image(text, base_path="."):
     """Check for an image in the text and upload if necessary."""
-    image_match = re.search(r"!\[(.*?)\]\((.*?)\)", text)
+    # Use a greedy match for the path to handle filenames with parentheses,
+    # then walk back to find the last ')' that closes the markdown syntax.
+    image_match = re.search(r"!\[(.*?)\]\((.*)\)", text)
     if not image_match:
         return text, None  # No image found, return unchanged text
 
     alt_text, image_path = image_match.groups()
 
-    # Replace '%2F' with '/' if present.
-    if '%2F' in image_path:
-        image_path = image_path.replace('%2F', '/')
+    # Decode any URL-encoded characters (e.g. %20 → space, %2F → /)
+    image_path = unquote(image_path)
 
     # Only process local files (skip URLs)
     if image_path.startswith("http"):
@@ -52,8 +53,8 @@ def check_for_image(text, base_path="."):
         return text, None
 
     try:
-        image_url = upload_image_to_dropbox(image_full_path)
-        if not image_url:
+        file_upload_id = upload_image_to_notion(image_full_path)
+        if not file_upload_id:
             print(f"{RED}Error: Failed to upload image - {image_full_path}{RESET}")
             return text, None
     except Exception as e:
@@ -68,8 +69,8 @@ def check_for_image(text, base_path="."):
         "object": "block",
         "type": "image",
         "image": {
-            "type": "external",
-            "external": {"url": image_url}
+            "type": "file_upload",
+            "file_upload": {"id": file_upload_id},
         }
     }
     return text, image_block
@@ -259,6 +260,30 @@ def enforce_rich_text_limits(block):
         for child in children:
             enforce_rich_text_limits(child)
 
+STRUCTURAL_BLOCK_TYPES = {
+    "heading_1", "heading_2", "heading_3",
+    "divider", "image", "code", "table",
+    "bulleted_list_item", "numbered_list_item",
+}
+
+
+def _is_empty_paragraph(block: dict) -> bool:
+    return (
+        block.get("type") == "paragraph"
+        and not any(
+            token.get("text", {}).get("content", "")
+            for token in block.get("paragraph", {}).get("rich_text", [])
+        )
+    )
+
+
+def _append_structural(blocks: list, block: dict):
+    """Append a structural block, removing any trailing empty paragraph first."""
+    if blocks and _is_empty_paragraph(blocks[-1]):
+        blocks.pop()
+    blocks.append(block)
+
+
 def md_to_notion_blocks(md_content, base_path="."):
     """Convert Markdown content into Notion API blocks."""
     blocks = []
@@ -276,11 +301,10 @@ def md_to_notion_blocks(md_content, base_path="."):
         cell = cell.strip()
         processed_text, image_block = check_for_image(cell, base_path)
         if image_block:
-            image_url = image_block["image"]["external"]["url"]
-            # Return a token that displays a placeholder and links to the image.
+            # Notion table cells cannot embed images; show a plain-text placeholder.
             return [{
                 "type": "text",
-                "text": {"content": "[Image]", "link": {"url": image_url}},
+                "text": {"content": "[Image]"},
                 "annotations": {"bold": False, "italic": False, "strikethrough": False,
                                 "underline": False, "code": False, "color": "default"}
             }]
@@ -408,7 +432,7 @@ def md_to_notion_blocks(md_content, base_path="."):
         elif line.startswith("#"):
             heading_level = min(line.count("#"), 3)
             text = line.lstrip("#").strip()
-            blocks.append({
+            _append_structural(blocks, {
                 "object": "block",
                 "type": f"heading_{heading_level}",
                 f"heading_{heading_level}": {"rich_text": [{"type": "text", "text": {"content": text}}]}
@@ -467,7 +491,7 @@ def md_to_notion_blocks(md_content, base_path="."):
                         parent_item[parent_type]["children"] = []
                     parent_item[parent_type]["children"].append(list_item)
                 else:
-                    blocks.append(list_item)
+                    _append_structural(blocks, list_item)
                 current_list_item = list_item
                 current_item_indent = indent_level
             list_stack.append((indent_level, list_item))
@@ -503,7 +527,7 @@ def md_to_notion_blocks(md_content, base_path="."):
                         parent_item[parent_type]["children"] = []
                     parent_item[parent_type]["children"].append(list_item)
                 else:
-                    blocks.append(list_item)
+                    _append_structural(blocks, list_item)
                 current_list_item = list_item
                 current_item_indent = indent_level
             list_stack.append((indent_level, list_item))
@@ -511,7 +535,7 @@ def md_to_notion_blocks(md_content, base_path="."):
         # Blockquotes
         elif line.startswith(">"):
             text = line.lstrip(">").strip()
-            blocks.append({
+            _append_structural(blocks, {
                 "object": "block",
                 "type": "quote",
                 "quote": {"rich_text": format_rich_text(text)}
@@ -519,7 +543,7 @@ def md_to_notion_blocks(md_content, base_path="."):
 
         # Horizontal rule
         elif line.strip() == "---":
-            blocks.append({
+            _append_structural(blocks, {
                 "object": "block",
                 "type": "divider",
                 "divider": {}
@@ -529,15 +553,18 @@ def md_to_notion_blocks(md_content, base_path="."):
         elif re.match(r"!\[.*?\]\(.*?\)", line.lstrip()):
             line, image_block = check_for_image(line, base_path)
             if image_block:
-                blocks.append(image_block)
+                _append_structural(blocks, image_block)
 
-        # If there's an empty line, treat it as a separate paragraph
+        # Empty line: only add a spacer paragraph between plain text paragraphs.
+        # Skip if the previous block already has its own spacing (structural type).
         elif line.strip() == "":
-            blocks.append({
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {"rich_text": [{"type": "text", "text": {"content": ""}}]}
-            })
+            prev_type = blocks[-1].get("type") if blocks else None
+            if prev_type not in STRUCTURAL_BLOCK_TYPES and not _is_empty_paragraph(blocks[-1] if blocks else {}):
+                blocks.append({
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {"rich_text": [{"type": "text", "text": {"content": ""}}]}
+                })
             current_list_item = None
             current_item_indent = 0
 
@@ -561,11 +588,17 @@ def md_to_notion_blocks(md_content, base_path="."):
                 blocks[-1]["paragraph"]["rich_text"][-1]["text"]["content"] += " " + text
 
             else:
-                blocks.append({
+                paragraph_block = {
                     "object": "block",
                     "type": "paragraph",
                     "paragraph": {"rich_text": format_rich_text(text)}
-                })
+                }
+                # Standalone link lines (entire line is a single markdown link) act
+                # like structural blocks — pop any trailing empty paragraph before them.
+                if re.match(r"^\[.+\]\(.+\)$", text):
+                    _append_structural(blocks, paragraph_block)
+                else:
+                    blocks.append(paragraph_block)
                 current_list_item = None
                 current_item_indent = 0
 

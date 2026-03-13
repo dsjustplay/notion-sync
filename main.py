@@ -1,9 +1,10 @@
 import time
 import os
 from utils import find_md_files
-from notion_api import upload_markdown_file_to_notion, delete_notion_page_if_missing
+from notion_api import upload_markdown_file_to_notion, delete_notion_page_if_missing, reconcile_state
 from markdown_parser import replace_md_links
 from config import BASE_DIR, RED, YELLOW, GREEN, RESET
+from sync_state import state
 
 def sync_markdown_to_notion():
     """
@@ -14,12 +15,18 @@ def sync_markdown_to_notion():
     # Start the timer to measure execution time.
     start_time = time.time()
 
+    # Load persistent state from disk.
+    state.load()
+
     # Phase 0: Locate all Markdown (.md) files in the base directory.
     md_files = find_md_files(BASE_DIR)
     total_files = len(md_files)
     if total_files == 0:
         print(f"{YELLOW}No Markdown (.md) files found.{RESET}")
         return
+
+    # On first run, populate state by walking the existing Notion tree.
+    reconcile_state(md_files)
 
     # Archive Notion pages corresponding to markdown files that no longer exist.
     deleted_pages = delete_notion_page_if_missing(md_files)
