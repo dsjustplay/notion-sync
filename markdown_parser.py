@@ -53,10 +53,11 @@ def check_for_image(text, base_path="."):
         return text, None
 
     try:
-        file_upload_id = upload_image_to_notion(image_full_path)
-        if not file_upload_id:
+        result = upload_image_to_notion(image_full_path)
+        if not result:
             print(f"{RED}Error: Failed to upload image - {image_full_path}{RESET}")
             return text, None
+        file_upload_id, from_cache = result
     except Exception as e:
         print(f"{YELLOW}Exception during image upload: {e}{RESET}")
         return text, None
@@ -64,14 +65,17 @@ def check_for_image(text, base_path="."):
     # Remove the Markdown image syntax from the text
     text = text.replace(f"![{alt_text}]({image_path})", "").strip()
 
-    # Return updated text and Notion image block
+    # Return updated text and Notion image block.
+    # _from_cache is internal metadata used for block diffing; it is stripped
+    # before any block is sent to the Notion API.
     image_block = {
         "object": "block",
         "type": "image",
         "image": {
             "type": "file_upload",
             "file_upload": {"id": file_upload_id},
-        }
+        },
+        "_from_cache": from_cache,
     }
     return text, image_block
 

@@ -1,10 +1,36 @@
-import time
+import argparse
 import os
-from utils import find_md_files
-from notion_api import upload_markdown_file_to_notion, delete_notion_page_if_missing, reconcile_state
-from markdown_parser import replace_md_links
-from config import BASE_DIR, RED, YELLOW, GREEN, RESET
-from sync_state import state
+
+# ---------------------------------------------------------------------------
+# Parse arguments and configure BASE_DIR *before* importing any module that
+# captures it from config at import time (notion_api, image_uploader, …).
+# ---------------------------------------------------------------------------
+def _parse_args():
+    parser = argparse.ArgumentParser(
+        description="Sync local Markdown files to Notion.",
+    )
+    parser.add_argument(
+        "docs_dir",
+        help="Path to the folder containing Markdown files to sync (e.g. /path/to/docs).",
+    )
+    parser.add_argument(
+        "--root-page-id",
+        metavar="PAGE_ID",
+        help="Notion page ID to sync under. Required on the first run; stored in sync_state.json afterwards.",
+    )
+    return parser.parse_args()
+
+_args = _parse_args()
+
+import config  # noqa: E402
+config.BASE_DIR = os.path.abspath(_args.docs_dir)
+
+import time  # noqa: E402
+from utils import find_md_files  # noqa: E402
+from notion_api import upload_markdown_file_to_notion, delete_notion_page_if_missing, reconcile_state  # noqa: E402
+from markdown_parser import replace_md_links  # noqa: E402
+from config import RED, YELLOW, GREEN, RESET  # noqa: E402
+from sync_state import state  # noqa: E402
 
 def sync_markdown_to_notion():
     """
@@ -15,11 +41,20 @@ def sync_markdown_to_notion():
     # Start the timer to measure execution time.
     start_time = time.time()
 
-    # Load persistent state from disk.
+    # Load persistent state from disk (lives inside the docs folder).
     state.load()
 
+    # Resolve Notion root page ID: CLI arg takes precedence, then state, then error.
+    if _args.root_page_id:
+        state.set_notion_root_page_id(_args.root_page_id)
+        state.save()
+    elif not state.get_notion_root_page_id():
+        print(f"{RED}Error: Notion root page ID is not set.{RESET}")
+        print(f"Pass it once with --root-page-id <PAGE_ID> and it will be saved for future runs.")
+        return
+
     # Phase 0: Locate all Markdown (.md) files in the base directory.
-    md_files = find_md_files(BASE_DIR)
+    md_files = find_md_files(config.BASE_DIR)
     total_files = len(md_files)
     if total_files == 0:
         print(f"{YELLOW}No Markdown (.md) files found.{RESET}")

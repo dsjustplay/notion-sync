@@ -1,9 +1,11 @@
+import hashlib
 import os
 import re
 import requests
+from difflib import SequenceMatcher
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
-from config import HEADERS, NOTION_ROOT_PAGE_ID, BLOCK_LIMIT, BASE_DIR, RED, YELLOW, GREEN, RESET
+from config import HEADERS, BLOCK_LIMIT, BASE_DIR, RED, YELLOW, GREEN, RESET
 from markdown_parser import md_to_notion_blocks
 from sync_state import state
 
@@ -24,16 +26,139 @@ def _extract_title(file_name: str, md_content: str) -> str:
     return name.strip()
 
 # Global session with retries
+# Default timeout for all Notion API calls (connect, read) in seconds.
+REQUEST_TIMEOUT = 30
+
 session = requests.Session()
 retries = Retry(
-    total=5,
-    backoff_factor=1,
+    total=3,
+    backoff_factor=0.5,
     status_forcelist=[429, 500, 502, 503, 504],
     allowed_methods=["HEAD", "GET", "OPTIONS", "POST", "PATCH", "DELETE"]
 )
 adapter = HTTPAdapter(max_retries=retries)
 session.mount("https://", adapter)
 session.mount("http://", adapter)
+
+# ---------------------------------------------------------------------------
+# Block-level diff helpers
+# ---------------------------------------------------------------------------
+
+def _md_hash(content: str) -> str:
+    """SHA-256 of markdown text, used to detect content changes without hitting the Notion API."""
+    return hashlib.sha256(content.encode()).hexdigest()
+
+
+def _block_fingerprint(block: dict) -> str:
+    """Stable string key for comparing a block in the diff.
+
+    Image blocks from Notion (existing) carry no _from_cache tag and are always
+    fingerprinted as 'image:cached'.  New image blocks served from our upload
+    cache (_from_cache=True) are also 'image:cached', so they match and the
+    existing Notion block is preserved.  Newly-uploaded images (_from_cache=False)
+    get a unique fingerprint so they trigger a replacement.
+    """
+    btype = block.get("type", "unknown")
+
+    if btype == "image":
+        from_cache = block.get("_from_cache")
+        if from_cache is False:
+            # Freshly uploaded — use the upload ID so it won't match the old block.
+            upload_id = block.get("image", {}).get("file_upload", {}).get("id", "")
+            return f"image:new:{upload_id}"
+        # Cached upload OR existing Notion block (no tag) → treat as unchanged.
+        return "image:cached"
+
+    if btype == "divider":
+        return "divider"
+
+    block_data = block.get(btype, {})
+    rich_text = block_data.get("rich_text", [])
+    text = "".join(rt.get("text", {}).get("content", "") for rt in rich_text)
+
+    if btype == "code":
+        lang = block_data.get("language", "plain text")
+        return f"code:{lang}:{text}"
+
+    return f"{btype}:{text}"
+
+
+def _strip_block_metadata(blocks: list) -> list:
+    """Remove internal _* metadata keys before sending blocks to the Notion API."""
+    return [{k: v for k, v in b.items() if not k.startswith("_")} for b in blocks]
+
+
+def _delete_block(block_id: str):
+    """Delete a single Notion block by ID."""
+    resp = session.delete(f"https://api.notion.com/v1/blocks/{block_id}", headers=HEADERS, timeout=REQUEST_TIMEOUT)
+    if resp.status_code != 200:
+        print(f"{RED}Failed to delete block {block_id}: {resp.status_code} - {resp.text}{RESET}")
+
+
+def _insert_blocks_after(page_id: str, blocks: list, after_id: str | None) -> bool:
+    """Append blocks to a page, optionally after a specific block ID."""
+    payload: dict = {"children": blocks}
+    if after_id:
+        payload["after"] = after_id
+    resp = session.patch(
+        f"https://api.notion.com/v1/blocks/{page_id}/children",
+        json=payload,
+        timeout=REQUEST_TIMEOUT,
+        headers=HEADERS,
+    )
+    if resp.status_code != 200:
+        print(f"{RED}Failed to insert blocks: {resp.status_code} - {resp.text}{RESET}")
+        return False
+    return True
+
+
+def sync_page_blocks(page_id: str, existing_blocks: list, new_blocks: list) -> str:
+    """Apply a minimal diff between existing Notion blocks and new blocks.
+
+    Unchanged blocks keep their Notion IDs (preserving comments/reactions).
+    Only changed, inserted, or deleted blocks are touched.
+    Returns 'updated' or 'failed'.
+    """
+    old_fps = [_block_fingerprint(b) for b in existing_blocks]
+    new_fps = [_block_fingerprint(b) for b in new_blocks]
+    ops = list(SequenceMatcher(None, old_fps, new_fps, autojunk=False).get_opcodes())
+
+    # The Notion API cannot insert before the first existing block (no 'before' parameter).
+    # Fall back to full page rewrite only in that edge case.
+    needs_insert_at_start = any(
+        tag in ("insert", "replace") and i1 == 0 and existing_blocks
+        for tag, i1, i2, j1, j2 in ops
+    )
+    if needs_insert_at_start:
+        print(f"{YELLOW}Insertion before first block detected; falling back to full page rewrite.{RESET}")
+        delete_existing_content(page_id)
+        result = upload_blocks_to_notion(page_id, _strip_block_metadata(new_blocks))
+        return result or "updated"
+
+    last_kept_id: str | None = None
+
+    for tag, i1, i2, j1, j2 in ops:
+        if tag == "equal":
+            last_kept_id = existing_blocks[i2 - 1]["id"]
+
+        elif tag == "delete":
+            for block in existing_blocks[i1:i2]:
+                _delete_block(block["id"])
+
+        elif tag == "insert":
+            ok = _insert_blocks_after(page_id, _strip_block_metadata(new_blocks[j1:j2]), last_kept_id)
+            if not ok:
+                return "failed"
+
+        elif tag == "replace":
+            for block in existing_blocks[i1:i2]:
+                _delete_block(block["id"])
+            ok = _insert_blocks_after(page_id, _strip_block_metadata(new_blocks[j1:j2]), last_kept_id)
+            if not ok:
+                return "failed"
+
+    return "updated"
+
 
 def get_all_notion_pages(parent_id, parent_path=""):
     """Recursively fetch all Notion pages under a given parent page and store full paths."""
@@ -50,7 +175,7 @@ def get_all_notion_pages(parent_id, parent_path=""):
             if next_cursor:
                 params["start_cursor"] = next_cursor
 
-            response = session.get(url, headers=HEADERS, params=params)
+            response = session.get(url, headers=HEADERS, params=params, timeout=REQUEST_TIMEOUT)
             if response.status_code != 200:
                 print(f"{RED}Error fetching pages: {response.status_code}, {response.text}{RESET}")
                 return notion_pages
@@ -83,7 +208,7 @@ def get_all_notion_pages(parent_id, parent_path=""):
 def get_existing_child_pages(parent_id):
     """Fetch all child pages under a parent to check for existing pages."""
     url = f"https://api.notion.com/v1/blocks/{parent_id}/children"
-    response = session.get(url, headers=HEADERS)
+    response = session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
 
     if response.status_code == 200:
         return response.json().get("results", [])
@@ -112,7 +237,7 @@ def search_existing_page(title, parent_id):
 def get_existing_page_content(page_id):
     """Fetch the current content of a Notion page."""
     url = f"https://api.notion.com/v1/blocks/{page_id}/children"
-    response = session.get(url, headers=HEADERS)
+    response = session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
 
     if response.status_code == 200:
         return response.json().get("results", [])
@@ -126,7 +251,7 @@ def archive_page_in_notion(page_id):
     url = f"https://api.notion.com/v1/pages/{page_id}"
     data = {"archived": True}
 
-    response = session.patch(url, headers=HEADERS, json=data)
+    response = session.patch(url, headers=HEADERS, json=data, timeout=REQUEST_TIMEOUT)
 
     if response.status_code == 200:
         print(f"{GREEN}Successfully archived Notion page (ID: {page_id}){RESET}")
@@ -144,7 +269,7 @@ def reconcile_state(local_md_files):
         return
 
     print(f"{YELLOW}No local state found. Discovering existing Notion pages (one-time)...{RESET}")
-    notion_pages = get_all_notion_pages(NOTION_ROOT_PAGE_ID)
+    notion_pages = get_all_notion_pages(state.get_notion_root_page_id())
 
     local_relative = {os.path.relpath(f, BASE_DIR) for f in local_md_files}
 
@@ -194,58 +319,6 @@ def delete_notion_page_if_missing(local_md_files):
     state.save()
     return deleted_pages
 
-def extract_full_text(blocks):
-    """Extracts all Notion block content into a single formatted text string for comparison."""
-    text_list = []
-
-    for block in blocks:
-        # Handle checkboxes (to-do items)
-        if "to_do" in block and "rich_text" in block["to_do"]:
-            checkbox_state = "[x]" if block["to_do"]["checked"] else "[ ]"
-            text_content = " ".join(rt["text"]["content"] for rt in block["to_do"]["rich_text"])
-            text_list.append(f"{checkbox_state} {text_content}")
-
-        # Handle text-based content
-        for key in ["paragraph", "heading_1", "heading_2", "heading_3", "bulleted_list_item", "numbered_list_item", "quote"]:
-            if key in block and "rich_text" in block[key]:
-                text_list.append(" ".join(rt["text"]["content"] for rt in block[key]["rich_text"]))
-
-        # Handle dividers
-        if "divider" in block:
-            text_list.append("---")
-
-        # Handle images — support both legacy external URLs and native file_upload blocks.
-        if "image" in block:
-            img = block["image"]
-            if img.get("type") == "external":
-                text_list.append(f"![Image]({img['external']['url']})")
-            elif img.get("type") == "file_upload":
-                text_list.append(f"![Image](file_upload:{img['file_upload']['id']})")
-            elif img.get("type") == "file":
-                text_list.append(f"![Image]({img['file']['url']})")
-
-        # Handle code blocks
-        if "code" in block and "rich_text" in block["code"]:
-            code_text = "\n".join(rt["text"]["content"] for rt in block["code"]["rich_text"])
-            text_list.append(f"```{block['code'].get('language', 'plain text')}\n{code_text}\n```")
-
-        # Handle tables
-        if "table" in block and "children" in block["table"]:
-            table_data = []
-            for row in block["table"]["children"]:
-                if "table_row" in row and "cells" in row["table_row"]:
-                    row_data = " | ".join(
-                        " ".join(cell["text"]["content"] for cell in cell_list if "text" in cell)
-                        for cell_list in row["table_row"]["cells"]
-                    )
-                    table_data.append(row_data)
-            text_list.append("\n".join(table_data))
-
-    return "\n".join(text_list).strip()
-
-def content_has_changed(existing_blocks, new_blocks):
-    """Compares full Notion page content with new Markdown content as a single formatted string."""
-    return extract_full_text(existing_blocks) != extract_full_text(new_blocks)
 
 def delete_existing_content(page_id):
     """Delete all content blocks from an existing Notion page before updating."""
@@ -253,7 +326,7 @@ def delete_existing_content(page_id):
     params = {"page_size": 100}
 
     while True:
-        response = session.get(url, headers=HEADERS, params=params)
+        response = session.get(url, headers=HEADERS, params=params, timeout=REQUEST_TIMEOUT)
         if response.status_code != 200:
             print(f"{RED}Error fetching content for deletion: {response.status_code}, {response.text}{RESET}")
             break
@@ -265,7 +338,7 @@ def delete_existing_content(page_id):
         for block in blocks:
             if block["object"] == "block" and block.get("id"):
                 block_id = block.get("id")
-                del_response = session.delete(f"https://api.notion.com/v1/blocks/{block_id}", headers=HEADERS)
+                del_response = session.delete(f"https://api.notion.com/v1/blocks/{block_id}", headers=HEADERS, timeout=REQUEST_TIMEOUT)
                 if del_response.status_code != 200:
                     print(f"{RED}Failed to delete block {block_id}: {del_response.status_code} - {del_response.text}{RESET}")
 
@@ -282,15 +355,7 @@ def create_or_update_notion_page(title, parent_id, blocks, is_folder=False):
     existing_page_id = search_existing_page(title, parent_id)
 
     if existing_page_id:
-        existing_blocks = get_existing_page_content(existing_page_id)
-
-        if not content_has_changed(existing_blocks, blocks):
-            print(f"Page '{title}' is already up to date. Skipping update.")
-            return existing_page_id  # No need to update if content hasn't changed
-
-        print(f"{YELLOW}Page '{title}' content has changed. Updating...{RESET}")
-        delete_existing_content(existing_page_id)
-        upload_blocks_to_notion(existing_page_id, blocks)
+        # Folder pages carry no content — nothing to update if the page already exists.
         return existing_page_id
 
     payload = {
@@ -301,7 +366,7 @@ def create_or_update_notion_page(title, parent_id, blocks, is_folder=False):
         payload["icon"] = {"emoji": "🗂️"}
 
     print(f"{GREEN}Creating new Notion page: {title}{RESET}")
-    response = session.post("https://api.notion.com/v1/pages", json=payload, headers=HEADERS)
+    response = session.post("https://api.notion.com/v1/pages", json=payload, headers=HEADERS, timeout=REQUEST_TIMEOUT)
     if response.status_code == 200:
         page_id = response.json().get("id")
         upload_blocks_to_notion(page_id, blocks)  # Upload content immediately
@@ -316,7 +381,7 @@ def get_or_create_folder_page(folder_path):
     Uses state for lookup (keyed by full relative path) to avoid name collisions
     between folders at different nesting levels.
     """
-    parent_id = NOTION_ROOT_PAGE_ID
+    parent_id = state.get_notion_root_page_id()
     folders = folder_path.split(os.sep)
     accumulated = ""
 
@@ -345,7 +410,8 @@ def upload_blocks_to_notion(page_id, blocks):
         response = session.patch(
             f"https://api.notion.com/v1/blocks/{page_id}/children",
             json={"children": blocks[i:i + BLOCK_LIMIT]},
-            headers=HEADERS
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT
         )
         if response.status_code == 200:
             print(f"{GREEN}Successfully updated Notion page (ID: {page_id}){RESET}")
@@ -366,7 +432,7 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
     base_path = os.path.dirname(file_path)
     relative_path = os.path.relpath(os.path.dirname(file_path), BASE_DIR)
 
-    parent_id = get_or_create_folder_page(relative_path) if relative_path != "." else NOTION_ROOT_PAGE_ID
+    parent_id = get_or_create_folder_page(relative_path) if relative_path != "." else state.get_notion_root_page_id()
 
     # Read markdown content.
     try:
@@ -416,17 +482,21 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
 
     if existing_page_id:
         if update_content:
-            existing_blocks = get_existing_page_content(existing_page_id)
-
-            if not content_has_changed(existing_blocks, blocks):
-                print(f"Page '{file_name}' is already up to date. Skipping update.")
+            # Fast path: skip if the markdown content hasn't changed since last sync.
+            current_hash = _md_hash(md_content)
+            if state.get_page_hash(state_key) == current_hash:
+                print(f"Page '{file_name}' unchanged. Skipping.")
                 return ("skipped", existing_page_id)
-            print(f"{YELLOW}Page '{file_name}' content has changed. Updating...{RESET}")
-            delete_existing_content(existing_page_id)
-            status = upload_blocks_to_notion(existing_page_id, blocks)
+
+            print(f"{YELLOW}Page '{file_name}' content has changed. Syncing...{RESET}")
+            existing_blocks = get_existing_page_content(existing_page_id)
+            status = sync_page_blocks(existing_page_id, existing_blocks, blocks)
 
             if status == "failed":
                 return ("failed", existing_page_id)
+
+            state.set_page_hash(state_key, current_hash)
+            state.save()
             return ("updated", existing_page_id)
         else:
             # Phase 1: page already known, nothing to do.
@@ -441,6 +511,7 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
                 "properties": {"title": {"title": [{"text": {"content": page_title}}]}},
             },
             headers=HEADERS,
+            timeout=REQUEST_TIMEOUT,
         )
 
         if response.status_code == 200:

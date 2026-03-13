@@ -2,5 +2,13 @@
 .idea/
 venv/
 .env
+__pycache__/
+*.pyc
 docs/
 sync_state.json
+setup.cfg
+api/
+guides/
+tutorials/
+index.md
+getting-started.md
