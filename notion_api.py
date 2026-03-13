@@ -95,20 +95,35 @@ def _delete_block(block_id: str):
         print(f"{RED}Failed to delete block {block_id}: {resp.status_code} - {resp.text}{RESET}")
 
 
+NOTION_BLOCK_LIMIT = 100
+
 def _insert_blocks_after(page_id: str, blocks: list, after_id: str | None) -> bool:
-    """Append blocks to a page, optionally after a specific block ID."""
-    payload: dict = {"children": blocks}
-    if after_id:
-        payload["after"] = after_id
-    resp = session.patch(
-        f"https://api.notion.com/v1/blocks/{page_id}/children",
-        json=payload,
-        timeout=REQUEST_TIMEOUT,
-        headers=HEADERS,
-    )
-    if resp.status_code != 200:
-        print(f"{RED}Failed to insert blocks: {resp.status_code} - {resp.text}{RESET}")
-        return False
+    """Append blocks to a page, optionally after a specific block ID.
+
+    Splits large payloads into sequential chunks of at most NOTION_BLOCK_LIMIT blocks
+    to satisfy Notion's API limit. Each subsequent chunk is inserted after the last
+    block of the previous chunk.
+    """
+    current_after_id = after_id
+
+    for i in range(0, len(blocks), NOTION_BLOCK_LIMIT):
+        chunk = blocks[i:i + NOTION_BLOCK_LIMIT]
+        payload: dict = {"children": chunk}
+        if current_after_id:
+            payload["after"] = current_after_id
+        resp = session.patch(
+            f"https://api.notion.com/v1/blocks/{page_id}/children",
+            json=payload,
+            timeout=REQUEST_TIMEOUT,
+            headers=HEADERS,
+        )
+        if resp.status_code != 200:
+            print(f"{RED}Failed to insert blocks: {resp.status_code} - {resp.text}{RESET}")
+            return False
+        results = resp.json().get("results", [])
+        if results:
+            current_after_id = results[-1]["id"]
+
     return True
 
 
