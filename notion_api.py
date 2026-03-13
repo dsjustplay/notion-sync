@@ -1,9 +1,27 @@
 import os
+import re
 import requests
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 from config import HEADERS, NOTION_ROOT_PAGE_ID, BLOCK_LIMIT, BASE_DIR, RED, YELLOW, GREEN, RESET
 from markdown_parser import md_to_notion_blocks
+from sync_state import state
+
+
+def _extract_title(file_name: str, md_content: str) -> str:
+    """Return a clean page title.
+
+    Priority:
+    1. First H1 heading found in the markdown content.
+    2. Filename with Notion's export UUID suffix and .md extension stripped.
+    """
+    match = re.search(r"^#\s+(.+)$", md_content, re.MULTILINE)
+    if match:
+        return match.group(1).strip()
+    # Strip trailing Notion UUID (space + 32 hex chars) and .md extension.
+    name = os.path.splitext(file_name)[0]
+    name = re.sub(r"\s+[a-f0-9]{32}$", "", name)
+    return name.strip()
 
 # Global session with retries
 session = requests.Session()
@@ -16,8 +34,6 @@ retries = Retry(
 adapter = HTTPAdapter(max_retries=retries)
 session.mount("https://", adapter)
 session.mount("http://", adapter)
-
-folder_cache = {} # Cache for storing folder page IDs
 
 def get_all_notion_pages(parent_id, parent_path=""):
     """Recursively fetch all Notion pages under a given parent page and store full paths."""
@@ -119,46 +135,63 @@ def archive_page_in_notion(page_id):
         print(f"{RED}Failed to archive Notion page (ID: {page_id}) | Status Code: {response.status_code}{RESET}")
         print(f"Response: {response.text}")
 
+def reconcile_state(local_md_files):
+    """Populate state from the live Notion tree on the very first run (empty state).
+
+    Subsequent runs skip this and trust the state file entirely.
+    """
+    if not state.is_empty:
+        return
+
+    print(f"{YELLOW}No local state found. Discovering existing Notion pages (one-time)...{RESET}")
+    notion_pages = get_all_notion_pages(NOTION_ROOT_PAGE_ID)
+
+    local_relative = {os.path.relpath(f, BASE_DIR) for f in local_md_files}
+
+    for notion_path, page_id in notion_pages.items():
+        if notion_path.endswith(".md"):
+            if notion_path in local_relative:
+                state.set_page_id(notion_path, page_id)
+        else:
+            state.set_folder_id(notion_path, page_id)
+
+    state.save()
+    print(f"{GREEN}Reconciled {len(state.all_pages())} page(s) and {len(state.all_folders())} folder(s) from Notion.{RESET}")
+
+
 def delete_notion_page_if_missing(local_md_files):
     """Archives Notion pages that correspond to missing local Markdown files."""
-    notion_pages = get_all_notion_pages(NOTION_ROOT_PAGE_ID)  # Get all Notion pages with full paths
-
-    # Ensure local filenames **store full relative paths WITH `.md`**
     local_file_names = {os.path.relpath(f, BASE_DIR) for f in local_md_files}
 
-    # Extract **folder structure** to track subdirectories
+    # Derive which folder paths are still needed locally.
     local_folders = set()
     for f in local_md_files:
         folder_path = os.path.dirname(f)
         while folder_path and folder_path != BASE_DIR:
-            local_folders.add(os.path.relpath(folder_path, BASE_DIR))  # Keep relative paths
+            local_folders.add(os.path.relpath(folder_path, BASE_DIR))
             folder_path = os.path.dirname(folder_path)
 
-    remaining_folders = {}  # Store folder pages to process later
-    deleted_pages = 0  # Track deleted pages
+    deleted_pages = 0
 
-    for notion_path, page_id in notion_pages.items():
-        # Check if this Notion page represents a Markdown file
-        if notion_path.endswith(".md"):
-            if notion_path not in local_file_names:
-                print(f"{RED}Detected missing file: {notion_path} | Archiving Notion page...{RESET}")
-                status = archive_page_in_notion(page_id)
-                if status == "deleted":
-                    deleted_pages += 1
+    # Archive pages tracked in state that no longer exist locally.
+    for local_path, page_id in list(state.all_pages().items()):
+        if local_path not in local_file_names:
+            print(f"{RED}Detected missing file: {local_path} | Archiving Notion page...{RESET}")
+            result = archive_page_in_notion(page_id)
+            if result == "deleted":
+                state.remove_page(local_path)
+                deleted_pages += 1
 
-        # Check if this Notion page represents a folder
-        else:
-            remaining_folders[notion_path] = page_id
-
-    # Process folder deletions
-    for folder_path, folder_page_id in remaining_folders.items():
+    # Archive folder pages tracked in state that are no longer needed.
+    for folder_path, folder_page_id in list(state.all_folders().items()):
         if folder_path not in local_folders:
-            child_pages = get_existing_child_pages(folder_page_id)  # Get Notion folder children
-
-            if not child_pages:  # Only delete if it's empty
+            child_pages = get_existing_child_pages(folder_page_id)
+            if not child_pages:
                 print(f"{RED}Folder {folder_path} is now empty. Archiving Notion folder page...{RESET}")
                 archive_page_in_notion(folder_page_id)
+                state.remove_folder(folder_path)
 
+    state.save()
     return deleted_pages
 
 def extract_full_text(blocks):
@@ -181,9 +214,15 @@ def extract_full_text(blocks):
         if "divider" in block:
             text_list.append("---")
 
-        # Handle images
-        if "image" in block and "external" in block["image"]:
-            text_list.append(f"![Image]({block['image']['external']['url']})")
+        # Handle images — support both legacy external URLs and native file_upload blocks.
+        if "image" in block:
+            img = block["image"]
+            if img.get("type") == "external":
+                text_list.append(f"![Image]({img['external']['url']})")
+            elif img.get("type") == "file_upload":
+                text_list.append(f"![Image](file_upload:{img['file_upload']['id']})")
+            elif img.get("type") == "file":
+                text_list.append(f"![Image]({img['file']['url']})")
 
         # Handle code blocks
         if "code" in block and "rich_text" in block["code"]:
@@ -272,20 +311,28 @@ def create_or_update_notion_page(title, parent_id, blocks, is_folder=False):
         return None
 
 def get_or_create_folder_page(folder_path):
-    """Ensure Notion folder pages match directory structure recursively."""
+    """Ensure Notion folder pages match directory structure recursively.
+
+    Uses state for lookup (keyed by full relative path) to avoid name collisions
+    between folders at different nesting levels.
+    """
     parent_id = NOTION_ROOT_PAGE_ID
     folders = folder_path.split(os.sep)
+    accumulated = ""
 
     for folder in folders:
-        if folder in folder_cache:
-            parent_id = folder_cache[folder]
+        accumulated = os.path.join(accumulated, folder) if accumulated else folder
+        cached_id = state.get_folder_id(accumulated)
+        if cached_id:
+            parent_id = cached_id
         else:
             folder_id = search_existing_page(folder, parent_id)
             if not folder_id:
                 folder_id = create_or_update_notion_page(folder, parent_id, [], is_folder=True)
             if folder_id:
-                folder_cache[folder] = folder_id
+                state.set_folder_id(accumulated, folder_id)
                 parent_id = folder_id
+
     return parent_id
 
 def upload_blocks_to_notion(page_id, blocks):
@@ -338,9 +385,17 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
         print(f"{RED}Error reading {file_path}: {e}{RESET}")
         return ("failed", None)
 
+    page_title = _extract_title(file_name, md_content)
+
     # Generate blocks.
     if update_content:
         blocks = md_to_notion_blocks(md_content, base_path=base_path)
+        # Drop the first block if it's the H1 that was promoted to the page title,
+        # so it doesn't appear as a duplicate heading inside the page.
+        if (blocks and blocks[0].get("type") == "heading_1"):
+            first_text = blocks[0].get("heading_1", {}).get("rich_text", [{}])[0].get("text", {}).get("content", "")
+            if first_text.strip() == page_title:
+                blocks = blocks[1:]
     else:
         # Minimal content (an empty paragraph) for initial creation.
         blocks = [{
@@ -355,8 +410,9 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
         print(f"{YELLOW}Warning: No content to upload for {file_name}{RESET}")
         return ("skipped", None)
 
-    # Check if the page already exists.
-    existing_page_id = search_existing_page(file_name, parent_id)
+    # Look up the page ID from local state (O(1), no Notion API call).
+    state_key = os.path.relpath(file_path, BASE_DIR)
+    existing_page_id = state.get_page_id(state_key)
 
     if existing_page_id:
         if update_content:
@@ -373,22 +429,24 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
                 return ("failed", existing_page_id)
             return ("updated", existing_page_id)
         else:
-            # If not updating content (phase 1), do nothing if the page exists.
+            # Phase 1: page already known, nothing to do.
             return ("skipped", existing_page_id)
     else:
         # Create a new page.
-        print(f"{GREEN}Creating new Notion page: {file_name}{RESET}")
+        print(f"{GREEN}Creating new Notion page: {page_title}{RESET}")
         response = session.post(
             "https://api.notion.com/v1/pages",
             json={
                 "parent": {"page_id": parent_id},
-                "properties": {"title": {"title": [{"text": {"content": file_name}}]}},
+                "properties": {"title": {"title": [{"text": {"content": page_title}}]}},
             },
             headers=HEADERS,
         )
 
         if response.status_code == 200:
             new_page_id = response.json().get("id")
+            state.set_page_id(state_key, new_page_id)
+            state.save()
             upload_blocks_to_notion(new_page_id, blocks)
             return ("created", new_page_id)
         else:

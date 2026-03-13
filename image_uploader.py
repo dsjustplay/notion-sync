@@ -1,133 +1,84 @@
 import os
+import hashlib
 import requests
-import json
-from config import (
-    DROPBOX_REFRESH_TOKEN,
-    DROPBOX_APP_KEY,
-    DROPBOX_APP_SECRET,
-    DROPBOX_UPLOAD_URL,
-    DROPBOX_SHARE_URL,
-    DROPBOX_LIST_SHARED_LINKS_URL,
-    DROPBOX_METADATA_URL,
-    RED,
-    GREEN,
-    YELLOW,
-    RESET,
-)
+from config import HEADERS, RED, GREEN, YELLOW, RESET
+from sync_state import state
 
-def get_access_token():
-    """Fetch a new access token using the refresh token."""
-    url = "https://api.dropboxapi.com/oauth2/token"
-    data = {
-        "grant_type": "refresh_token",
-        "refresh_token": DROPBOX_REFRESH_TOKEN,
-        "client_id": DROPBOX_APP_KEY,
-        "client_secret": DROPBOX_APP_SECRET,
-    }
-    response = requests.post(url, data=data)
+NOTION_FILE_UPLOADS_URL = "https://api.notion.com/v1/file_uploads"
 
-    if response.status_code == 200:
-        access_token = response.json().get("access_token")
-        return access_token
-    else:
-        print(f"{RED}Failed to refresh access token: {response.text}{RESET}")
-        return None
-
-def get_headers():
-    """Returns headers with the latest access token."""
-    access_token = get_access_token()
-    if not access_token:
-        print(f"{RED}Unable to retrieve a valid access token{RESET}")
-        return None
-    return {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-
-def check_if_file_exists(dropbox_path):
-    """Checks if a file already exists in Dropbox."""
-    headers = get_headers()
-    if not headers:
-        return False
-
-    data = json.dumps({"path": dropbox_path})
-
-    response = requests.post(DROPBOX_METADATA_URL, headers=headers, data=data)
-
-    return response.status_code == 200
+# Headers without Content-Type so requests can set the correct multipart boundary.
+_UPLOAD_HEADERS = {
+    "Authorization": HEADERS["Authorization"],
+    "Notion-Version": HEADERS["Notion-Version"],
+}
 
 
-def upload_image_to_dropbox(image_path):
-    """Uploads an image to Dropbox and returns a direct raw link."""
+def _sha256(path: str) -> str:
+    """Compute the SHA-256 hex digest of a file."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def upload_image_to_notion(image_path: str) -> str | None:
+    """Upload a local image to Notion via the File Upload API.
+
+    Returns the file_upload_id to embed in image blocks, or None on failure.
+    Uses a local SHA-256 cache (via sync_state) to skip unchanged files.
+    """
     if not os.path.exists(image_path):
         print(f"{YELLOW}Image not found: {image_path}{RESET}")
         return None
 
-    image_filename = os.path.basename(image_path)
-    dropbox_path = f"/notion-images/{image_filename}"
+    current_hash = _sha256(image_path)
+    cached = state.get_image(image_path)
 
-    headers = get_headers()
-    if not headers:
-        return False
+    if cached and cached.get("sha256") == current_hash:
+        print(f"{YELLOW}Image unchanged, reusing upload: {os.path.basename(image_path)}{RESET}")
+        return cached["file_upload_id"]
 
-    headers.update({
-            "Dropbox-API-Arg": json.dumps({"path": dropbox_path, "mode": "overwrite"}),
-            "Content-Type": "application/octet-stream"
-    })
-
-    if check_if_file_exists(dropbox_path):
-        print(f"{YELLOW}Image already exists in Dropbox. Fetching existing link...{RESET}")
-        return get_existing_or_new_dropbox_link(dropbox_path)
-
-    with open(image_path, "rb") as image_file:
-        response = requests.post(DROPBOX_UPLOAD_URL, headers=headers, data=image_file)
-
-    if response.status_code == 200:
-        print(f"{GREEN}Uploaded {image_filename} to Dropbox{RESET}")
-        return get_existing_or_new_dropbox_link(dropbox_path)
-    else:
-        print(f"{RED}Failed to upload {image_filename}: Status Code {response.status_code}{RESET}")
-        print(f"Response Content: {response.text}")
+    # Step 1: Create a File Upload object to get an upload URL + ID.
+    create_response = requests.post(
+        NOTION_FILE_UPLOADS_URL,
+        headers=HEADERS,
+        json={"mode": "single_part"},
+    )
+    if create_response.status_code != 200:
+        print(f"{RED}Failed to create file upload: {create_response.status_code} - {create_response.text}{RESET}")
         return None
 
-def get_existing_or_new_dropbox_link(file_path):
-    """Retrieves an existing Dropbox shared link or creates a new one."""
-    headers = get_headers()
-    if not headers:
-        return False
+    upload_data = create_response.json()
+    upload_id = upload_data["id"]
+    upload_url = upload_data["upload_url"]
 
-    data = json.dumps({"path": file_path})
+    # Determine MIME type so Notion classifies the file correctly.
+    ext = os.path.splitext(image_path)[1].lower()
+    mime_types = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".svg": "image/svg+xml",
+    }
+    mime_type = mime_types.get(ext, "image/png")
 
-    # Check if a shared link already exists
-    response = requests.post(DROPBOX_LIST_SHARED_LINKS_URL, headers=headers, data=data)
+    # Step 2: POST the file bytes as multipart/form-data.
+    with open(image_path, "rb") as f:
+        send_response = requests.post(
+            upload_url,
+            headers=_UPLOAD_HEADERS,
+            files={"file": (os.path.basename(image_path), f, mime_type)},
+        )
 
-    if response.status_code == 200:
-        links = response.json().get("links", [])
-        if links:
-            raw_link = convert_to_direct_link(links[0]["url"])
-            print(f"{YELLOW}Found existing Dropbox link: {raw_link}{RESET}")
-            return raw_link
-
-    # If no link exists, create a new one
-    return create_dropbox_shared_link(file_path)
-
-def create_dropbox_shared_link(file_path):
-    """Creates a new Dropbox shared link and converts it to a direct raw link."""
-    headers = get_headers()
-    if not headers:
-        return False
-
-    data = json.dumps({"path": file_path, "settings": {"requested_visibility": "public"}})
-
-    response = requests.post(DROPBOX_SHARE_URL, headers=headers, data=data)
-
-    if response.status_code == 200:
-        shared_url = response.json()["url"]
-        raw_link = convert_to_direct_link(shared_url)
-        print(f"{GREEN}Created new Dropbox link: {raw_link}{RESET}")
-        return raw_link
-    else:
-        print(f"{RED}Failed to create shareable link: Status Code {response.status_code}{RESET}")
-        print(f"Response Content: {response.text}")
+    if send_response.status_code not in (200, 201):
+        print(f"{RED}Failed to upload image bytes: {send_response.status_code} - {send_response.text}{RESET}")
         return None
 
-def convert_to_direct_link(dropbox_link):
-    """Converts Dropbox shareable link to a direct raw image link."""
-    return dropbox_link.replace("www.dropbox.com", "dl.dropboxusercontent.com").replace("?dl=0", "")
+    print(f"{GREEN}Uploaded {os.path.basename(image_path)} to Notion (id: {upload_id}){RESET}")
+    state.set_image(image_path, current_hash, upload_id)
+    state.save()
+
+    return upload_id
