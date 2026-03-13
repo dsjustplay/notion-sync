@@ -172,18 +172,20 @@ def format_rich_text(text):
             link_text = match.group("link_text")
             link_url = match.group("link_url").strip()
 
-            # If URL ends with .php or .json and isn't fully qualified, output as plain text.
-            link_url_lower = link_url.lower()
-            if (link_url_lower.endswith(('.php', '.json', '.drawio', '.pem', '.mind')) or link_url.startswith("#")) and not link_url_lower.startswith(('http://', 'https://')):
+            # Only emit a clickable link when the URL is a valid absolute HTTP(S) URL.
+            # Relative paths (e.g. "fraud-score-system.md", "#anchor") and file
+            # extensions that Notion can't open are rendered as plain text instead,
+            # which avoids Notion's "Invalid URL for link" 400 error.
+            if is_valid_url(link_url):
                 rich_text.append({
                     "type": "text",
-                    "text": {"content": link_text},
+                    "text": {"content": link_text, "link": {"url": link_url}},
                     "annotations": {"bold": False, "italic": False, "strikethrough": False, "underline": False, "code": False, "color": "default"}
                 })
             else:
                 rich_text.append({
                     "type": "text",
-                    "text": {"content": link_text, "link": {"url": link_url}},
+                    "text": {"content": link_text},
                     "annotations": {"bold": False, "italic": False, "strikethrough": False, "underline": False, "code": False, "color": "default"}
                 })
 
