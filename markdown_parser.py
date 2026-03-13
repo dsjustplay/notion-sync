@@ -29,7 +29,7 @@ def split_text_into_chunks(text, max_length=MAX_BLOCK_TEXT_LENGTH):
     """Splits text into chunks that fit within Notion's character limit."""
     return [text[i:i + max_length] for i in range(0, len(text), max_length)]
 
-def check_for_image(text, base_path="."):
+def check_for_image(text, base_path=".", dry_run=False):
     """Check for an image in the text and upload if necessary."""
     # Use a greedy match for the path to handle filenames with parentheses,
     # then walk back to find the last ')' that closes the markdown syntax.
@@ -53,7 +53,7 @@ def check_for_image(text, base_path="."):
         return text, None
 
     try:
-        result = upload_image_to_notion(image_full_path)
+        result = upload_image_to_notion(image_full_path, dry_run=dry_run)
         if not result:
             print(f"{RED}Error: Failed to upload image - {image_full_path}{RESET}")
             return text, None
@@ -288,7 +288,7 @@ def _append_structural(blocks: list, block: dict):
     blocks.append(block)
 
 
-def md_to_notion_blocks(md_content, base_path="."):
+def md_to_notion_blocks(md_content, base_path=".", dry_run=False):
     """Convert Markdown content into Notion API blocks."""
     blocks = []
     lines = md_content.split("\n")
@@ -303,7 +303,7 @@ def md_to_notion_blocks(md_content, base_path="."):
     def process_cell(cell, base_path):
         """Process a table cell."""
         cell = cell.strip()
-        processed_text, image_block = check_for_image(cell, base_path)
+        processed_text, image_block = check_for_image(cell, base_path, dry_run=dry_run)
         if image_block:
             # Notion table cells cannot embed images; show a plain-text placeholder.
             return [{
@@ -468,7 +468,7 @@ def md_to_notion_blocks(md_content, base_path="."):
         elif re.match(r"^\s*(-|\*)\s", line):
             indent_level = len(line) - len(line.lstrip())
             text = line.lstrip().lstrip("-*").strip()
-            text, image_block = check_for_image(text, base_path)
+            text, image_block = check_for_image(text, base_path, dry_run=dry_run)
             if image_block:
                 blocks.append(image_block)
             list_item = {
@@ -504,7 +504,7 @@ def md_to_notion_blocks(md_content, base_path="."):
         elif re.match(r"^\s*\d+\.\s", line):
             indent_level = len(line) - len(line.lstrip())
             text = line.lstrip().split(". ", 1)[1] if ". " in line else line
-            text, image_block = check_for_image(text, base_path)
+            text, image_block = check_for_image(text, base_path, dry_run=dry_run)
             if image_block:
                 blocks.append(image_block)
             list_item = {
@@ -555,7 +555,7 @@ def md_to_notion_blocks(md_content, base_path="."):
 
         # Image handling (if line contains a standalone image)
         elif re.match(r"!\[.*?\]\(.*?\)", line.lstrip()):
-            line, image_block = check_for_image(line, base_path)
+            line, image_block = check_for_image(line, base_path, dry_run=dry_run)
             if image_block:
                 _append_structural(blocks, image_block)
 
