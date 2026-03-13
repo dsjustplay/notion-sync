@@ -1,7 +1,7 @@
 import os
 import hashlib
 import requests
-from config import HEADERS, RED, GREEN, YELLOW, RESET
+from config import HEADERS, BASE_DIR, RED, GREEN, YELLOW, RESET
 from sync_state import state
 
 NOTION_FILE_UPLOADS_URL = "https://api.notion.com/v1/file_uploads"
@@ -22,22 +22,27 @@ def _sha256(path: str) -> str:
     return h.hexdigest()
 
 
-def upload_image_to_notion(image_path: str) -> str | None:
+def upload_image_to_notion(image_path: str) -> tuple[str, bool] | None:
     """Upload a local image to Notion via the File Upload API.
 
-    Returns the file_upload_id to embed in image blocks, or None on failure.
+    Returns (file_upload_id, from_cache) on success, or None on failure.
+    from_cache=True means the image was unchanged and served from the local cache.
+    from_cache=False means the image was freshly uploaded.
     Uses a local SHA-256 cache (via sync_state) to skip unchanged files.
     """
     if not os.path.exists(image_path):
         print(f"{YELLOW}Image not found: {image_path}{RESET}")
         return None
 
+    # Use a path relative to BASE_DIR as the state key so the cache is portable.
+    state_key = os.path.relpath(image_path, BASE_DIR)
+
     current_hash = _sha256(image_path)
-    cached = state.get_image(image_path)
+    cached = state.get_image(state_key)
 
     if cached and cached.get("sha256") == current_hash:
         print(f"{YELLOW}Image unchanged, reusing upload: {os.path.basename(image_path)}{RESET}")
-        return cached["file_upload_id"]
+        return cached["file_upload_id"], True
 
     # Step 1: Create a File Upload object to get an upload URL + ID.
     create_response = requests.post(
@@ -78,7 +83,7 @@ def upload_image_to_notion(image_path: str) -> str | None:
         return None
 
     print(f"{GREEN}Uploaded {os.path.basename(image_path)} to Notion (id: {upload_id}){RESET}")
-    state.set_image(image_path, current_hash, upload_id)
+    state.set_image(state_key, current_hash, upload_id)
     state.save()
 
-    return upload_id
+    return upload_id, False

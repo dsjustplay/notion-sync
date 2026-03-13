@@ -4,9 +4,8 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-# Retrieve Notion API credentials from environment variables
+# Retrieve Notion API token from environment variables
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
-NOTION_ROOT_PAGE_ID = os.getenv("NOTION_ROOT_PAGE_ID")
 
 # Headers for Notion API requests
 HEADERS = {

@@ -1,25 +1,37 @@
 import json
 import os
+import config
 
-STATE_FILE = "sync_state.json"
+STATE_FILENAME = "sync_state.json"
+
+
+def _state_file_path() -> str:
+    """Resolve the state file path inside the configured docs folder."""
+    return os.path.join(config.BASE_DIR, STATE_FILENAME)
 
 
 class SyncState:
     """Persistent local state mapping local paths to Notion IDs and image upload cache."""
 
     def __init__(self):
-        self._data = {"pages": {}, "folders": {}, "images": {}}
+        self._data = {"pages": {}, "folders": {}, "images": {}, "page_hashes": {}, "notion_root_page_id": None}
 
     def load(self):
         """Load state from disk. Safe to call even if the file does not exist yet."""
-        if os.path.exists(STATE_FILE):
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
+        path = _state_file_path()
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
                 self._data = json.load(f)
+            # Backward-compat: add keys introduced after the initial release.
+            self._data.setdefault("page_hashes", {})
+            self._data.setdefault("notion_root_page_id", None)
         return self
 
     def save(self):
-        """Persist current state to disk."""
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
+        """Persist current state to disk (inside the docs folder)."""
+        path = _state_file_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(self._data, f, indent=2)
 
     # ------------------------------------------------------------------
@@ -34,9 +46,30 @@ class SyncState:
 
     def remove_page(self, local_path: str):
         self._data["pages"].pop(local_path, None)
+        self._data["page_hashes"].pop(local_path, None)
 
     def all_pages(self) -> dict:
         return dict(self._data["pages"])
+
+    # ------------------------------------------------------------------
+    # Page content hashes  (key: relative local path, value: SHA-256 of markdown)
+    # ------------------------------------------------------------------
+
+    def get_page_hash(self, local_path: str) -> str | None:
+        return self._data["page_hashes"].get(local_path)
+
+    def set_page_hash(self, local_path: str, content_hash: str):
+        self._data["page_hashes"][local_path] = content_hash
+
+    # ------------------------------------------------------------------
+    # Notion root page ID  (stored here so the token is the only thing in .env)
+    # ------------------------------------------------------------------
+
+    def get_notion_root_page_id(self) -> str | None:
+        return self._data.get("notion_root_page_id")
+
+    def set_notion_root_page_id(self, page_id: str):
+        self._data["notion_root_page_id"] = page_id
 
     # ------------------------------------------------------------------
     # Folders  (key: full relative folder path, e.g. "guides/api")
@@ -55,7 +88,7 @@ class SyncState:
         return dict(self._data["folders"])
 
     # ------------------------------------------------------------------
-    # Images  (key: absolute local image path)
+    # Images  (key: path relative to docs folder, e.g. "Fraud Control/image.png")
     # ------------------------------------------------------------------
 
     def get_image(self, local_path: str) -> dict | None:
