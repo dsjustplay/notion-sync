@@ -23,7 +23,7 @@ INLINE_PATTERN = re.compile(
 )
 
 # Cached regex for markdown links in replace_md_links.
-MD_LINK_PATTERN = re.compile(r'\[(.*?)\]\(([^)#]+)(?:#[^)]+)?\)')
+MD_LINK_PATTERN = re.compile(r'\[(.*?)\]\(((?:[^()\[\]]|\([^()]*\))+?)(?:#[^)]+)?\)')
 
 def split_text_into_chunks(text, max_length=MAX_BLOCK_TEXT_LENGTH):
     """Splits text into chunks that fit within Notion's character limit."""
@@ -172,6 +172,19 @@ def format_rich_text(text):
             link_text = match.group("link_text")
             link_url = match.group("link_url").strip()
 
+            # Strip bold/italic wrappers from the link text and reflect them as
+            # annotations instead (e.g. "[**Foo**](url)" → bold link "Foo").
+            link_bold, link_italic = False, False
+            if re.match(r'^\*{3}.+\*{3}$', link_text):
+                link_text = link_text[3:-3]
+                link_bold = link_italic = True
+            elif re.match(r'^\*{2}.+\*{2}$', link_text):
+                link_text = link_text[2:-2]
+                link_bold = True
+            elif re.match(r'^\*.+\*$', link_text):
+                link_text = link_text[1:-1]
+                link_italic = True
+
             # Only emit a clickable link when the URL is a valid absolute HTTP(S) URL.
             # Relative paths (e.g. "fraud-score-system.md", "#anchor") and file
             # extensions that Notion can't open are rendered as plain text instead,
@@ -180,13 +193,13 @@ def format_rich_text(text):
                 rich_text.append({
                     "type": "text",
                     "text": {"content": link_text, "link": {"url": link_url}},
-                    "annotations": {"bold": False, "italic": False, "strikethrough": False, "underline": False, "code": False, "color": "default"}
+                    "annotations": {"bold": link_bold, "italic": link_italic, "strikethrough": False, "underline": False, "code": False, "color": "default"}
                 })
             else:
                 rich_text.append({
                     "type": "text",
                     "text": {"content": link_text},
-                    "annotations": {"bold": False, "italic": False, "strikethrough": False, "underline": False, "code": False, "color": "default"}
+                    "annotations": {"bold": link_bold, "italic": link_italic, "strikethrough": False, "underline": False, "code": False, "color": "default"}
                 })
 
         elif match.group("url"):
@@ -438,10 +451,14 @@ def md_to_notion_blocks(md_content, base_path=".", dry_run=False):
         elif line.startswith("#"):
             heading_level = min(line.count("#"), 3)
             text = line.lstrip("#").strip()
+            # Strip wrapping bold/italic markers (e.g. "## **Title**" → "Title").
+            # Heading blocks already carry visual weight through their level; applying
+            # bold=True inside them causes Notion to display the asterisks literally.
+            text = re.sub(r'^\*{1,3}(.*?)\*{1,3}$', r'\1', text).strip()
             _append_structural(blocks, {
                 "object": "block",
                 "type": f"heading_{heading_level}",
-                f"heading_{heading_level}": {"rich_text": [{"type": "text", "text": {"content": text}}]}
+                f"heading_{heading_level}": {"rich_text": format_rich_text(text)}
             })
 
         # To-Do lists
@@ -621,13 +638,50 @@ def replace_md_links(markdown_content, mapping):
     Replace markdown inline links that reference a local .md file with the corresponding Notion page URL.
     The mapping should be a dictionary where the keys are markdown filenames (e.g. "New.md")
     and the values are the corresponding Notion page URLs.
+
+    Resolution order (first match wins):
+    1. Direct filename match (after URL-decoding).
+    2. Strip Notion export UUID suffix (e.g. "Name 3388886659844c1ebe573b0acc39ff73.md" → "Name.md").
+    3. Slug match: normalise both sides to lowercase + hyphens for comparison
+       (e.g. "fraud-score-system.md" → "Fraud Score System.md").
     """
+    # Pre-build a slug → original-key lookup for pass 3.
+    _UUID_RE = re.compile(r'\s+[0-9a-f]{32}$', re.IGNORECASE)
+
+    def _slugify(stem):
+        """Lowercase and replace spaces/underscores with hyphens."""
+        return stem.lower().replace(' ', '-').replace('_', '-')
+
+    slug_lookup = {}
+    for key in mapping:
+        stem = os.path.splitext(key)[0]
+        slug_lookup[_slugify(stem)] = key
+
     def repl(match):
         text = match.group(1)
-        base_url = match.group(2).strip()
-        if base_url.lower().endswith('.md'):
-            filename = os.path.basename(base_url)
-            if filename in mapping:
-                return f"[{text}]({mapping[filename]})"
+        base_url = unquote(match.group(2).strip())
+        if not base_url.lower().endswith('.md'):
+            return match.group(0)
+
+        filename = os.path.basename(base_url)
+
+        # Pass 1: direct match
+        if filename in mapping:
+            return f"[{text}]({mapping[filename]})"
+
+        # Pass 2: strip Notion export UUID suffix
+        stem, ext = os.path.splitext(filename)
+        stripped_stem = _UUID_RE.sub('', stem)
+        stripped_filename = stripped_stem + ext
+        if stripped_filename in mapping:
+            return f"[{text}]({mapping[stripped_filename]})"
+
+        # Pass 3: slug match (also try on the UUID-stripped stem)
+        for candidate_stem in (stem, stripped_stem):
+            slug = _slugify(candidate_stem)
+            if slug in slug_lookup:
+                return f"[{text}]({mapping[slug_lookup[slug]]})"
+
         return match.group(0)
+
     return MD_LINK_PATTERN.sub(repl, markdown_content)
