@@ -499,7 +499,7 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
 
     page_title = _extract_title(file_name, md_content)
 
-    # Generate blocks.
+    # Generate blocks (Phase 2 / update only — Phase 1 just needs page structure).
     if update_content:
         blocks = md_to_notion_blocks(md_content, base_path=base_path, dry_run=dry_run)
         # Drop the first block if it's the H1 that was promoted to the page title,
@@ -508,19 +508,11 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
             first_text = blocks[0].get("heading_1", {}).get("rich_text", [{}])[0].get("text", {}).get("content", "")
             if first_text.strip() == page_title:
                 blocks = blocks[1:]
+        if not blocks:
+            print(f"{YELLOW}Warning: No content to upload for {file_name}{RESET}")
+            return ("skipped", None)
     else:
-        # Minimal content (an empty paragraph) for initial creation.
-        blocks = [{
-            "object": "block",
-            "type": "paragraph",
-            "paragraph": {
-                "rich_text": [{"type": "text", "text": {"content": ""}}]
-            }
-        }]
-
-    if not blocks:
-        print(f"{YELLOW}Warning: No content to upload for {file_name}{RESET}")
-        return ("skipped", None)
+        blocks = []
 
     # Look up the page ID from local state (O(1), no Notion API call).
     state_key = os.path.relpath(file_path, BASE_DIR)
@@ -536,6 +528,15 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
 
             action = "[dry] Would sync" if dry_run else "Syncing"
             print(f"{YELLOW}Page '{file_name}' content has changed. {action}...{RESET}")
+
+            # Fresh page (just created in Phase 1, no content yet) — upload directly,
+            # no need to fetch or diff. Avoids 404s on newly created pages.
+            if state.get_page_hash(state_key) is None and not dry_run:
+                upload_blocks_to_notion(existing_page_id, _strip_block_metadata(blocks))
+                state.set_page_hash(state_key, current_hash)
+                state.save()
+                return ("updated", existing_page_id)
+
             existing_blocks = get_existing_page_content(existing_page_id)
 
             # None means the page is gone or archived on Notion's side.
@@ -559,9 +560,9 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
             return ("skipped", existing_page_id)
 
     if not existing_page_id:
-        # Create a new page.
+        # Create a new page (title only — Phase 2 uploads the content).
         if dry_run:
-            print(f"{YELLOW}[dry] Would create: '{page_title}' ({len(blocks)} blocks){RESET}")
+            print(f"{YELLOW}[dry] Would create: '{page_title}'{RESET}")
             return ("created", None)
 
         print(f"{GREEN}Creating new Notion page: {page_title}{RESET}")
@@ -579,7 +580,6 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
             new_page_id = response.json().get("id")
             state.set_page_id(state_key, new_page_id)
             state.save()
-            upload_blocks_to_notion(new_page_id, blocks)
             return ("created", new_page_id)
         else:
             print(f"{RED}Failed to create Notion page: {file_name} | Error: {response.status_code} - {response.text}{RESET}")
