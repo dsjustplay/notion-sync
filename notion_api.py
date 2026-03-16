@@ -457,12 +457,11 @@ def upload_blocks_to_notion(page_id, blocks):
             headers=HEADERS,
             timeout=REQUEST_TIMEOUT
         )
-        if response.status_code == 200:
-            print(f"{GREEN}Successfully updated Notion page (ID: {page_id}){RESET}")
-        else:
+        if response.status_code != 200:
             print(f"{RED}Error updating blocks: {response.status_code}, {response.text}{RESET}")
             return "failed"
 
+    print(f"{GREEN}Successfully updated Notion page (ID: {page_id}){RESET}")
     return "updated"
 
 def upload_markdown_file_to_notion(file_path, update_content=False, new_content=None,
