@@ -120,5 +120,5 @@ notion-sync/
 ## Notes
 
 - Ensure your Notion integration has **edit access** to the root page (**Share → Connect to**).
-- `sync_state.json` is auto-generated inside `<docs_dir>` and never lives in the project folder. If `<docs_dir>` is version-controlled, add `sync_state.json` to its `.gitignore`.
+- `sync_state.json` is auto-generated inside `<docs_dir>` and never lives in the project folder. If `<docs_dir>` is version-controlled, commit `sync_state.json` — it tracks the mapping between local files and Notion page IDs and should be shared across machines.
 - If you change the markdown-to-Notion rendering logic, clear the content hashes in `sync_state.json` to force a full re-upload (set all `content_hash` values to `null` or delete the file).
