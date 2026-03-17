@@ -102,6 +102,19 @@ def _block_fingerprint(block: dict) -> str:
         url = block.get("bookmark", {}).get("url", "")
         return f"bookmark:{url}"
 
+    if btype == "table":
+        # Fingerprint based on cell content so the diff detects table changes.
+        # Both new blocks (children embedded by parser) and existing Notion blocks
+        # (children fetched by get_existing_page_content) carry children here.
+        children = block.get("table", {}).get("children", [])
+        parts = []
+        for row in children:
+            for cell in row.get("table_row", {}).get("cells", []):
+                for rt in cell:
+                    parts.append(rt.get("text", {}).get("content", ""))
+        digest = hashlib.md5("|".join(parts).encode()).hexdigest()[:8]
+        return f"table:{digest}"
+
     block_data = block.get(btype, {})
     rich_text = block_data.get("rich_text", [])
     text = "".join(rt.get("text", {}).get("content", "") for rt in rich_text)
@@ -295,17 +308,33 @@ def search_existing_page(title, parent_id):
 def get_existing_page_content(page_id):
     """Fetch the current content of a Notion page.
 
+    Also fetches table row children for any table blocks encountered, so that
+    _block_fingerprint can compute content-aware hashes for tables.
+
     Returns a list of blocks on success, or None when the page cannot be found
     (404) or is archived — callers should treat None as "page needs recreating".
     """
     url = f"https://api.notion.com/v1/blocks/{page_id}/children"
     response = session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
 
-    if response.status_code == 200:
-        return response.json().get("results", [])
-    else:
+    if response.status_code != 200:
         print(f"{RED}Error fetching page content: {response.status_code}, {response.text}{RESET}")
         return None
+
+    blocks = response.json().get("results", [])
+
+    # Enrich table blocks with their row children so fingerprinting is content-aware.
+    for block in blocks:
+        if block.get("type") == "table":
+            rows_resp = session.get(
+                f"https://api.notion.com/v1/blocks/{block['id']}/children",
+                headers=HEADERS,
+                timeout=REQUEST_TIMEOUT,
+            )
+            if rows_resp.status_code == 200:
+                block.setdefault("table", {})["children"] = rows_resp.json().get("results", [])
+
+    return blocks
 
 def archive_page_in_notion(page_id):
     """Archives a Notion page instead of deleting it."""
