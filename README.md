@@ -114,12 +114,11 @@ notion-sync/
 ├── utils.py                   # File discovery helpers
 ├── requirements.txt           # Python dependencies
 ├── .env.example               # Environment variable template
-├── sync_state.json.example    # State file template (copy into <docs_dir>)
-└── sync_state.json            # Auto-generated inside <docs_dir>; tracks page IDs and content hashes
+└── sync_state.json.example    # State file template (copy into <docs_dir>)
 ```
 
 ## Notes
 
 - Ensure your Notion integration has **edit access** to the root page (**Share → Connect to**).
-- `sync_state.json` is created inside `<docs_dir>`. If that directory is version-controlled, add `sync_state.json` to its `.gitignore`.
+- `sync_state.json` is auto-generated inside `<docs_dir>` and never lives in the project folder. If `<docs_dir>` is version-controlled, add `sync_state.json` to its `.gitignore`.
 - If you change the markdown-to-Notion rendering logic, clear the content hashes in `sync_state.json` to force a full re-upload (set all `content_hash` values to `null` or delete the file).
