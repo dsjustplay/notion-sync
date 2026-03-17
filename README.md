@@ -59,13 +59,13 @@ Syncs Markdown (`.md`) files from a local directory to Notion, creating and upda
 The root page ID is passed via CLI on the **first run** and stored automatically in `sync_state.json` for all subsequent runs:
 
 ```sh
-python main.py /path/to/your/files --root-page-id 19632a12f848273458356deccd685c23b
+python main.py <docs_dir> --root-page-id 19632a12f848273458356deccd685c23b
 ```
 
 Alternatively, copy the provided example into `<docs_dir>` and fill in your page ID before the first run:
 
 ```sh
-cp sync_state.json.example /path/to/your/files/sync_state.json
+cp sync_state.json.example <docs_dir>/sync_state.json
 # then edit sync_state.json and replace "your-root-page-id-here"
 ```
 
@@ -85,13 +85,13 @@ python main.py <docs_dir> [--root-page-id PAGE_ID] [--dry-run]
 
 ```sh
 # First run — provide the root page ID once
-python main.py /path/to/your/files --root-page-id 19632a12f848273458356deccd685c23b
+python main.py <docs_dir> --root-page-id 19632a12f848273458356deccd685c23b
 
 # Subsequent runs — root page ID is read from sync_state.json
-python main.py /path/to/your/files
+python main.py <docs_dir>
 
 # Preview changes without touching Notion
-python main.py /path/to/your/files --dry-run
+python main.py <docs_dir> --dry-run
 ```
 
 ## How it works
