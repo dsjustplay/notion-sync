@@ -559,7 +559,11 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
         if existing_blocks is None:
             upload_blocks_to_notion(root_page_id, _strip_block_metadata(blocks))
         else:
-            sync_page_blocks(root_page_id, existing_blocks, blocks, dry_run=dry_run)
+            # Exclude child_page blocks from the existing set — those are the
+            # subpages created in Phase 1 and must never be deleted or rewritten
+            # when syncing the root file's content onto the target page.
+            content_blocks = [b for b in existing_blocks if b.get("type") != "child_page"]
+            sync_page_blocks(root_page_id, content_blocks, blocks, dry_run=dry_run)
         if not dry_run:
             state.set_page_hash(state_key, current_hash)
             state.save()
