@@ -151,6 +151,9 @@ Headings (H1–H3), paragraphs, bullet and numbered lists (up to 3 levels of nes
 
 ### First run (cold start — no `sync_state.json`)
 
+```sh
+python main.py <docs_dir> --root-page-id 19632a12f848273458356deccd685c23b
+```
 ```
 No local state found. Discovering existing Notion pages (one-time)...
 Fetching All Notion Pages to compare with local...
@@ -174,6 +177,9 @@ Total time taken: 0h 4m 19.00s
 
 ### Subsequent run — nothing changed
 
+```sh
+python main.py <docs_dir>
+```
 ```
 Found 21 Markdown file(s). Starting sync...
 Mapped Fraud Control.md -> https://www.notion.so/Fraud-Control-<page_id>
@@ -191,6 +197,9 @@ Total time taken: 0h 0m 8.00s
 
 ### Subsequent run — some files changed
 
+```sh
+python main.py <docs_dir>
+```
 ```
 Found 21 Markdown file(s). Starting sync...
 Mapped Fraud Control.md -> https://www.notion.so/Fraud-Control-<page_id>
@@ -211,6 +220,9 @@ Total time taken: 0h 0m 35.00s
 
 ### Dry run
 
+```sh
+python main.py <docs_dir> --dry-run
+```
 ```
 DRY RUN — no changes will be made to Notion.
 
@@ -231,6 +243,9 @@ Total time taken: 0h 0m 6.00s
 
 ### A local file was deleted
 
+```sh
+python main.py <docs_dir>
+```
 ```
 Detected missing file: Fraud Control/old-page.md | Archiving Notion page...
 Successfully archived Notion page (ID: <page_id>)
