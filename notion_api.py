@@ -10,6 +10,25 @@ from markdown_parser import md_to_notion_blocks
 from sync_state import state
 
 
+def _root_stem() -> str | None:
+    """Detect the root markdown file that has a matching subfolder in BASE_DIR.
+
+    E.g. if BASE_DIR contains 'Fraud Control.md' and 'Fraud Control/' this
+    returns 'Fraud Control'.  The root file's content is uploaded directly to
+    the target Notion page rather than creating an extra child page for it.
+    Returns None if no such pair is found.
+    """
+    try:
+        for entry in os.scandir(BASE_DIR):
+            if entry.is_file() and entry.name.endswith(".md"):
+                stem = os.path.splitext(entry.name)[0]
+                if os.path.isdir(os.path.join(BASE_DIR, stem)):
+                    return stem
+    except Exception:
+        pass
+    return None
+
+
 def _extract_title(file_name: str, md_content: str) -> str:
     """Return a clean page title.
 
@@ -421,9 +440,21 @@ def get_or_create_folder_page(folder_path, dry_run: bool = False):
     Uses state for lookup (keyed by full relative path) to avoid name collisions
     between folders at different nesting levels.
     In dry_run mode, skips creation and returns the root page ID as a placeholder.
+
+    If the first segment of folder_path matches the root stem (the folder that
+    pairs with the root .md file), it is skipped — that level maps directly to
+    the target Notion page rather than creating an intermediate folder page.
     """
     parent_id = state.get_notion_root_page_id()
     folders = folder_path.split(os.sep)
+
+    # Strip the root-stem segment so its children land directly under the target page.
+    root_stem = _root_stem()
+    if root_stem and folders and folders[0] == root_stem:
+        folders = folders[1:]
+    if not folders or folders == [""]:
+        return parent_id
+
     accumulated = ""
 
     for folder in folders:
@@ -476,6 +507,56 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
     file_name = os.path.basename(file_path)
     base_path = os.path.dirname(file_path)
     relative_path = os.path.relpath(os.path.dirname(file_path), BASE_DIR)
+    state_key = os.path.relpath(file_path, BASE_DIR)
+
+    # Detect whether this is the root overview file (e.g. 'Fraud Control.md'
+    # paired with 'Fraud Control/' in the same directory).  Its content is
+    # written directly to the target Notion page instead of creating a child.
+    root_stem = _root_stem()
+    is_root_file = (
+        relative_path == "."
+        and root_stem is not None
+        and os.path.splitext(file_name)[0] == root_stem
+    )
+
+    if is_root_file:
+        root_page_id = state.get_notion_root_page_id()
+        # Phase 1: register target page as this file's page (no new page created).
+        if not update_content:
+            if not state.get_page_id(state_key):
+                state.set_page_id(state_key, root_page_id)
+                state.save()
+            return ("skipped", root_page_id)
+
+        # Phase 2: sync content directly onto the target Notion page.
+        try:
+            md_content = new_content if new_content is not None else open(file_path, encoding="utf-8").read()
+        except Exception as e:
+            print(f"{RED}Error reading {file_path}: {e}{RESET}")
+            return ("failed", None)
+
+        current_hash = _md_hash(md_content)
+        if state.get_page_hash(state_key) == current_hash:
+            print(f"Page '{file_name}' unchanged. Skipping.")
+            return ("skipped", root_page_id)
+
+        blocks = md_to_notion_blocks(md_content, base_path=base_path, dry_run=dry_run)
+        # Drop leading H1 if it duplicates the page title.
+        if blocks and blocks[0].get("type") == "heading_1":
+            first_text = blocks[0].get("heading_1", {}).get("rich_text", [{}])[0].get("text", {}).get("content", "")
+            if first_text.strip() == root_stem:
+                blocks = blocks[1:]
+
+        print(f"{YELLOW}Page '{file_name}' content has changed. Syncing to root page...{RESET}")
+        existing_blocks = get_existing_page_content(root_page_id)
+        if existing_blocks is None:
+            upload_blocks_to_notion(root_page_id, _strip_block_metadata(blocks))
+        else:
+            sync_page_blocks(root_page_id, existing_blocks, blocks, dry_run=dry_run)
+        if not dry_run:
+            state.set_page_hash(state_key, current_hash)
+            state.save()
+        return ("updated", root_page_id)
 
     parent_id = get_or_create_folder_page(relative_path, dry_run=dry_run) if relative_path != "." else state.get_notion_root_page_id()
 
@@ -514,7 +595,6 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
         blocks = []
 
     # Look up the page ID from local state (O(1), no Notion API call).
-    state_key = os.path.relpath(file_path, BASE_DIR)
     existing_page_id = state.get_page_id(state_key)
 
     if existing_page_id:
