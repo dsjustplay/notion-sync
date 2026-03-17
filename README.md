@@ -59,14 +59,14 @@ Syncs Markdown (`.md`) files from a local directory to Notion, creating and upda
 The root page ID is passed via CLI on the **first run** and stored automatically in `sync_state.json` for all subsequent runs:
 
 ```sh
-python main.py docs --root-page-id 19632a12f848273458356deccd685c23b
+python main.py /path/to/your/files --root-page-id 19632a12f848273458356deccd685c23b
 ```
 
-Alternatively, copy the provided example and fill in your page ID before the first run:
+Alternatively, copy the provided example into `<docs_dir>` and fill in your page ID before the first run:
 
 ```sh
-cp sync_state.json.example docs/sync_state.json
-# then edit docs/sync_state.json and replace "your-root-page-id-here"
+cp sync_state.json.example /path/to/your/files/sync_state.json
+# then edit sync_state.json and replace "your-root-page-id-here"
 ```
 
 ## Usage
@@ -77,7 +77,7 @@ python main.py <docs_dir> [--root-page-id PAGE_ID] [--dry-run]
 
 | Argument | Required | Description |
 |---|---|---|
-| `docs_dir` | Always | Path to the folder containing Markdown files |
+| `docs_dir` | Always | Path to the folder containing Markdown files to sync |
 | `--root-page-id` | First run only | Notion page ID to sync under; saved to `sync_state.json` for subsequent runs |
 | `--dry-run` | Optional | Preview what would be created, updated, or archived — no changes made to Notion |
 
@@ -85,13 +85,13 @@ python main.py <docs_dir> [--root-page-id PAGE_ID] [--dry-run]
 
 ```sh
 # First run — provide the root page ID once
-python main.py docs --root-page-id 19632a12f848273458356deccd685c23b
+python main.py /path/to/your/files --root-page-id 19632a12f848273458356deccd685c23b
 
 # Subsequent runs — root page ID is read from sync_state.json
-python main.py docs
+python main.py /path/to/your/files
 
 # Preview changes without touching Notion
-python main.py docs --dry-run
+python main.py /path/to/your/files --dry-run
 ```
 
 ## How it works
@@ -114,13 +114,12 @@ notion-sync/
 ├── utils.py                   # File discovery helpers
 ├── requirements.txt           # Python dependencies
 ├── .env.example               # Environment variable template
-├── sync_state.json.example    # State file template (copy into your docs dir)
-└── docs/                      # Your docs directory (not committed)
-    └── sync_state.json        # Auto-generated; tracks page IDs and content hashes
+├── sync_state.json.example    # State file template (copy into <docs_dir>)
+└── sync_state.json            # Auto-generated inside <docs_dir>; tracks page IDs and content hashes
 ```
 
 ## Notes
 
 - Ensure your Notion integration has **edit access** to the root page (**Share → Connect to**).
-- `sync_state.json` lives inside your docs directory. If that directory is inside a version-controlled repo, add `sync_state.json` to its `.gitignore`.
+- `sync_state.json` is created inside `<docs_dir>`. If that directory is version-controlled, add `sync_state.json` to its `.gitignore`.
 - If you change the markdown-to-Notion rendering logic, clear the content hashes in `sync_state.json` to force a full re-upload (set all `content_hash` values to `null` or delete the file).
