@@ -7,6 +7,7 @@ Entry point: pull_from_notion(target_dir, root_page_id)
 import hashlib
 import os
 import re
+import urllib.parse
 import requests
 
 from config import HEADERS, RED, YELLOW, GREEN, RESET
@@ -108,9 +109,11 @@ def download_image(url: str, dest_dir: str, hint: str = "image") -> str | None:
     os.makedirs(assets_dir, exist_ok=True)
 
     # Prefer the original filename embedded in the URL (present in Notion S3 URLs).
+    # URL-decode so the saved file and the markdown reference both use plain text names
+    # (e.g. "white_Fraud_Overview_(1).png" not "white_Fraud_Overview_%281%29.png").
     url_path = url.split("?")[0]
-    url_basename = _sanitise_filename(os.path.basename(url_path))
-    ext = os.path.splitext(url_path)[1] or ".png"
+    url_basename = _sanitise_filename(urllib.parse.unquote(os.path.basename(url_path)))
+    ext = os.path.splitext(urllib.parse.unquote(url_path))[1] or ".png"
     filename = url_basename if url_basename else (_sanitise_filename(hint) + ext)
     dest_path = os.path.join(assets_dir, filename)
 
@@ -133,12 +136,13 @@ def download_image(url: str, dest_dir: str, hint: str = "image") -> str | None:
 # Blocks → Markdown
 # ---------------------------------------------------------------------------
 
-def blocks_to_md(blocks: list, page_dir: str, indent: int = 0) -> str:
+def blocks_to_md(blocks: list, page_dir: str, indent: int = 0, page_title: str = "") -> str:
     """Convert a list of Notion blocks to a Markdown string.
 
-    page_dir is the directory where the page's .md file will be written,
-    used to resolve relative image paths.
-    indent controls nesting level for list items (number of spaces).
+    page_dir   – directory where the page's .md file is written (for image paths).
+    indent     – nesting level for list items.
+    page_title – title of the current page; child_page links are placed in a
+                 sub-folder of this name so we need it to build correct relative paths.
     """
     lines = []
     prefix = "  " * indent
@@ -215,7 +219,13 @@ def blocks_to_md(blocks: list, page_dir: str, indent: int = 0) -> str:
 
         elif btype == "child_page":
             title = data.get("title", "")
-            lines.append(f"[{title}]({_sanitise_filename(title)}.md)")
+            safe_title = _sanitise_filename(title)
+            # Child pages live in a sub-folder named after the current page.
+            if page_title:
+                subfolder = _sanitise_filename(page_title)
+                lines.append(f"[{title}]({subfolder}/{safe_title}.md)")
+            else:
+                lines.append(f"[{title}]({safe_title}.md)")
 
         else:
             # Best-effort fallback for callouts, toggles, columns, etc.
@@ -254,7 +264,7 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str):
     filepath = os.path.join(dest_dir, filename)
 
     blocks = fetch_blocks_recursive(page_id)
-    md_content = f"# {page_title}\n\n" + blocks_to_md(blocks, dest_dir)
+    md_content = f"# {page_title}\n\n" + blocks_to_md(blocks, dest_dir, page_title=page_title)
 
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(md_content)
