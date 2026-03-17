@@ -555,14 +555,36 @@ def md_to_notion_blocks(md_content, base_path=".", dry_run=False):
                 current_item_indent = indent_level
             list_stack.append((indent_level, list_item))
 
-        # Blockquotes
+        # Blockquotes — but first intercept special Notion export markers
         elif line.startswith(">"):
             text = line.lstrip(">").strip()
+            if text == "[table_of_contents]: [table_of_contents]":
+                # Notion's built-in ToC block
+                _append_structural(blocks, {
+                    "object": "block",
+                    "type": "table_of_contents",
+                    "table_of_contents": {"color": "default"}
+                })
+            elif text == "[synced_block]: [synced_block]":
+                # Live synced blocks can't be round-tripped; drop silently
+                pass
+            else:
+                _append_structural(blocks, {
+                    "object": "block",
+                    "type": "quote",
+                    "quote": {"rich_text": format_rich_text(text)}
+                })
+
+        # Table of contents / synced block without blockquote prefix (fallback)
+        elif line.strip() == "[table_of_contents]: [table_of_contents]":
             _append_structural(blocks, {
                 "object": "block",
-                "type": "quote",
-                "quote": {"rich_text": format_rich_text(text)}
+                "type": "table_of_contents",
+                "table_of_contents": {"color": "default"}
             })
+
+        elif line.strip() == "[synced_block]: [synced_block]":
+            pass  # Drop silently
 
         # Horizontal rule
         elif line.strip() == "---":
@@ -635,18 +657,27 @@ def md_to_notion_blocks(md_content, base_path=".", dry_run=False):
 
 def replace_md_links(markdown_content, mapping):
     """
-    Replace markdown inline links that reference a local .md file with the corresponding Notion page URL.
-    The mapping should be a dictionary where the keys are markdown filenames (e.g. "New.md")
-    and the values are the corresponding Notion page URLs.
+    Replace markdown inline links with the corresponding Notion page URL.
 
-    Resolution order (first match wins):
+    Handles two kinds of links:
+    - Relative .md file links: [text](path/to/file.md)
+    - Absolute Notion page URLs: [text](https://www.notion.so/Page-Title-{id})
+
+    Resolution order for .md links (first match wins):
     1. Direct filename match (after URL-decoding).
     2. Strip Notion export UUID suffix (e.g. "Name 3388886659844c1ebe573b0acc39ff73.md" → "Name.md").
-    3. Slug match: normalise both sides to lowercase + hyphens for comparison
-       (e.g. "fraud-score-system.md" → "Fraud Score System.md").
+    3. Slug match: normalise both sides to lowercase + hyphens for comparison.
+
+    Absolute Notion URLs are rewritten when their slug matches a page in the mapping,
+    so that stale links to the source Notion workspace are updated to point to the
+    newly synced pages.
     """
-    # Pre-build a slug → original-key lookup for pass 3.
     _UUID_RE = re.compile(r'\s+[0-9a-f]{32}$', re.IGNORECASE)
+    # Notion URL hex suffix: 32 hex chars at the end of the path segment
+    _NOTION_URL_RE = re.compile(
+        r'^https://www\.notion\.so/(?:[^/]+/)?([A-Za-z0-9%\-]+?)-([0-9a-f]{32})$',
+        re.IGNORECASE
+    )
 
     def _slugify(stem):
         """Lowercase and replace spaces/underscores with hyphens."""
@@ -660,6 +691,16 @@ def replace_md_links(markdown_content, mapping):
     def repl(match):
         text = match.group(1)
         base_url = unquote(match.group(2).strip())
+
+        # --- Absolute Notion URL rewriting ---
+        notion_match = _NOTION_URL_RE.match(base_url)
+        if notion_match:
+            url_slug = notion_match.group(1).lower()
+            if url_slug in slug_lookup:
+                return f"[{text}]({mapping[slug_lookup[url_slug]]})"
+            return match.group(0)
+
+        # --- Relative .md link rewriting ---
         if not base_url.lower().endswith('.md'):
             return match.group(0)
 

@@ -256,6 +256,30 @@ def blocks_to_md(blocks: list, page_dir: str, indent: int = 0, page_title: str =
 # Pull orchestration
 # ---------------------------------------------------------------------------
 
+def _normalize_id(notion_id: str) -> str:
+    """Normalize a Notion ID by removing hyphens for reliable comparison."""
+    return notion_id.replace("-", "")
+
+
+def _get_page_parent_id(page_id: str) -> str | None:
+    """Return the normalized parent page ID of a Notion page.
+
+    Returns None if the parent is not a page (e.g. a database or workspace root),
+    or if the request fails.
+    """
+    resp = session.get(
+        f"https://api.notion.com/v1/pages/{page_id}",
+        headers=HEADERS,
+        timeout=REQUEST_TIMEOUT,
+    )
+    if resp.status_code != 200:
+        return None
+    parent = resp.json().get("parent", {})
+    if parent.get("type") == "page_id":
+        return _normalize_id(parent["page_id"])
+    return None
+
+
 def _page_title(page_id: str) -> str:
     """Retrieve the title of a Notion page via the Pages API."""
     resp = session.get(
@@ -291,8 +315,19 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str):
     print(f"{GREEN}Downloaded: {os.path.relpath(filepath, base_dir)}{RESET}")
 
 
-def _pull_children(page_id: str, page_title: str, dest_dir: str, base_dir: str):
-    """Recursively pull child pages of page_id into dest_dir/<page_title>/."""
+def _pull_children(page_id: str, page_title: str, dest_dir: str, base_dir: str,
+                   seen_ids: set | None = None):
+    """Recursively pull child pages of page_id into dest_dir/<page_title>/.
+
+    seen_ids  – set of already-downloaded page IDs (normalized, no hyphens).
+                Shared across the entire recursive traversal to prevent a page
+                that appears as a child_page block in multiple parents from
+                being downloaded more than once.
+    """
+    if seen_ids is None:
+        seen_ids = set()
+
+    norm_page_id = _normalize_id(page_id)
     url = f"https://api.notion.com/v1/blocks/{page_id}/children"
     next_cursor = None
     while True:
@@ -307,10 +342,26 @@ def _pull_children(page_id: str, page_title: str, dest_dir: str, base_dir: str):
         for block in data.get("results", []):
             if block.get("type") == "child_page":
                 child_id = block["id"]
+                norm_child_id = _normalize_id(child_id)
+
+                # Safety net: skip pages we've already downloaded.
+                if norm_child_id in seen_ids:
+                    continue
+
+                # Verify this page is truly a direct child of the current page.
+                # Notion can leave stale child_page blocks when pages are moved,
+                # causing the same page to appear under multiple parents.
+                actual_parent_id = _get_page_parent_id(child_id)
+                if actual_parent_id is not None and actual_parent_id != norm_page_id:
+                    print(f"{YELLOW}Skipping '{block['child_page']['title']}' under "
+                          f"'{page_title}' — its actual parent differs.{RESET}")
+                    continue
+
+                seen_ids.add(norm_child_id)
                 child_title = block["child_page"]["title"].strip()
                 child_dir = os.path.join(dest_dir, _sanitise_filename(page_title))
                 _pull_page(child_id, child_title, child_dir, base_dir)
-                _pull_children(child_id, child_title, child_dir, base_dir)
+                _pull_children(child_id, child_title, child_dir, base_dir, seen_ids)
         next_cursor = data.get("next_cursor")
         if not next_cursor:
             break
