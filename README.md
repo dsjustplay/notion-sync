@@ -4,6 +4,7 @@ Syncs Markdown (`.md`) files from a local directory to Notion, creating and upda
 
 ## Features
 
+**Sync (local → Notion)**
 - Recursively finds Markdown files in any directory
 - Converts Markdown syntax to Notion blocks (headings, lists, code, tables, images, links)
 - Creates or updates Notion pages, preserving folder structure as nested pages
@@ -11,6 +12,14 @@ Syncs Markdown (`.md`) files from a local directory to Notion, creating and upda
 - Block-level diffing — only changed blocks are updated, preserving comments and reactions
 - Auto-archives Notion pages when the corresponding local file is deleted
 - Dry-run mode — preview changes without writing to Notion
+- `--root-is-file` — writes a root `.md` file's content directly to the target page, avoiding an extra nesting level
+
+**Pull (Notion → local)**
+- Downloads a Notion page tree or database to local Markdown files
+- Auto-detects whether the root ID is a regular page or a database
+- Preserves folder hierarchy matching the Notion page tree
+- Downloads and saves embedded images locally under `assets/` subfolders
+- Writes a `sync_state.json` ready for subsequent `sync` runs
 
 ## Requirements
 
@@ -59,7 +68,7 @@ Syncs Markdown (`.md`) files from a local directory to Notion, creating and upda
 The root page ID is passed via CLI on the **first run** and stored automatically in `sync_state.json` for all subsequent runs:
 
 ```sh
-python main.py <docs_dir> --root-page-id 19632a12f848273458356deccd685c23b
+python main.py sync <docs_dir> --root-page-id 19632a12f848273458356deccd685c23b
 ```
 
 Alternatively, copy the provided example into `<docs_dir>` and fill in your page ID before the first run:
@@ -74,7 +83,7 @@ cp sync_state.json.example <docs_dir>/sync_state.json
 The tool has two subcommands:
 
 ```sh
-python main.py sync <docs_dir> [--root-page-id PAGE_ID] [--dry-run]
+python main.py sync <docs_dir> [--root-page-id PAGE_ID] [--dry-run] [--root-is-file]
 python main.py pull <target_dir> --root-page-id PAGE_ID
 ```
 
@@ -85,6 +94,7 @@ python main.py pull <target_dir> --root-page-id PAGE_ID
 | `docs_dir` | Always | Path to the folder containing Markdown files to sync |
 | `--root-page-id` | First run only | Notion page ID to sync under; saved to `sync_state.json` for subsequent runs |
 | `--dry-run` | Optional | Preview what would be created, updated, or archived — no changes made to Notion |
+| `--root-is-file` | Optional | Write the single root `.md` file's content directly to the target page instead of creating a child page for it (see [Root-is-file](#root-is-file)) |
 
 ```sh
 # First run — provide the root page ID once
@@ -95,6 +105,9 @@ python main.py sync <docs_dir>
 
 # Preview changes without touching Notion
 python main.py sync <docs_dir> --dry-run
+
+# Sync with root file written directly to the target page
+python main.py sync <docs_dir> --root-page-id 19632a12f848273458356deccd685c23b --root-is-file
 ```
 
 ### `pull` — download Notion pages to local Markdown
@@ -102,13 +115,18 @@ python main.py sync <docs_dir> --dry-run
 | Argument | Required | Description |
 |---|---|---|
 | `target_dir` | Always | Local directory to write downloaded Markdown files into |
-| `--root-page-id` | Always | Notion page ID to pull from |
+| `--root-page-id` | Always | Notion page or database ID to pull from |
 
 ```sh
 python main.py pull <target_dir> --root-page-id 19632a12f848273458356deccd685c23b
 ```
 
-Downloads the full page tree, saves images locally under `assets/` subfolders, and writes a `sync_state.json` ready for subsequent `sync` runs.
+The pull command auto-detects whether the root ID is a **regular page** or a **database**:
+
+- **Page**: downloads the page and its full child-page tree.
+- **Database**: downloads the database's own content blocks as the root file, then each database row and its child-page subtree, placed in a subfolder named after the database.
+
+Images are saved locally under `assets/` subfolders. A `sync_state.json` is written and is ready for subsequent `sync` runs.
 
 ## How it works
 
@@ -156,6 +174,42 @@ When rewriting `.md` links to Notion URLs, three passes are tried in order (firs
 3. **Slug match** — normalises both sides to lowercase + hyphens (e.g. `fraud-score-system.md` matches `Fraud Score System.md`).
 
 Unresolved links are left as plain text.
+
+### Root-is-file
+
+By default every `.md` file in `docs_dir` becomes a **child page** of the target Notion page. This works well for flat collections but creates an unwanted extra level of nesting when your directory looks like:
+
+```
+docs/
+  Fraud Control.md        ← overview / intro content
+  Fraud Control/
+    Earnings reductions.md
+    User verification.md
+    ...
+```
+
+Without `--root-is-file`, pushing this creates:
+```
+Target page
+  └── Fraud Control       ← extra child page, target page itself is empty
+        ├── Earnings reductions
+        └── ...
+```
+
+With `--root-is-file`, the root `.md` file's content is written **directly to the target page** and the subfolder's pages become its direct children:
+```
+Target page               ← content of Fraud Control.md lives here
+  ├── Earnings reductions
+  └── ...
+```
+
+**Requirements for `--root-is-file`:**
+- Exactly **one** `.md` file at the root of `docs_dir`.
+- A subfolder with the **same stem** as that file (e.g. `Fraud Control.md` + `Fraud Control/`).
+
+If either condition is not met the flag is ignored with a warning and normal behaviour applies.
+
+> **Tip:** `pull` always produces this paired structure when the source is a Notion database, so `--root-is-file` is the natural companion flag for a pull → sync round-trip.
 
 ### Markdown elements supported
 
@@ -270,13 +324,31 @@ Found 20 Markdown file(s). Starting sync...
 ...
 ```
 
-### `pull`
+### `sync` — with `--root-is-file`
+
+```sh
+python main.py sync <docs_dir> --root-page-id 19632a12f848273458356deccd685c23b --root-is-file
+```
+```
+Found 21 Markdown file(s). Starting sync...
+Page 'Fraud Control.md' content has changed. Syncing to root page...
+Creating new Notion page: Earnings reductions
+...
+
+======Sync Summary======
+Total Files: 21
+Create: 20
+Update: 1
+All files synced successfully!
+```
+
+### `pull` — from a page tree
 
 ```sh
 python main.py pull <target_dir> --root-page-id 19632a12f848273458356deccd685c23b
 ```
 ```
-Pulling from Notion page 19632a12f848273458356deccd685c23b into <target_dir> ...
+Pulling from Notion 19632a12f848273458356deccd685c23b into <target_dir> ...
 Root page: Fraud Control
 Downloaded: Fraud Control.md
 Downloaded: Fraud Control/Fraud Score System.md
@@ -284,6 +356,23 @@ Downloaded: Fraud Control/User verification.md
 ...
 
 Pull complete — 21 page(s) downloaded to <target_dir>
+```
+
+### `pull` — from a database
+
+```sh
+python main.py pull <target_dir> --root-page-id bb865e41690d4489b3e928aefa49cace
+```
+```
+Pulling from Notion bb865e41690d4489b3e928aefa49cace into <target_dir> ...
+Database: Fraud Control
+Downloaded: Fraud Control.md
+Downloaded: Fraud Control/Earnings reductions.md
+Downloaded: Fraud Control/User verification.md
+Downloaded: Fraud Control/User verification/Face check (facetec).md
+...
+
+Pull complete — 28 page(s) downloaded to <target_dir>
 ```
 
 ## File Structure
