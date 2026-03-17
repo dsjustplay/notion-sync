@@ -5,28 +5,35 @@ import requests
 from difflib import SequenceMatcher
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
-from config import HEADERS, BLOCK_LIMIT, BASE_DIR, RED, YELLOW, GREEN, RESET
+from config import HEADERS, BLOCK_LIMIT, BASE_DIR, ROOT_IS_FILE, RED, YELLOW, GREEN, RESET
 from markdown_parser import md_to_notion_blocks
 from sync_state import state
 
 
 def _root_stem() -> str | None:
-    """Detect the root markdown file that has a matching subfolder in BASE_DIR.
+    """Return the stem of the root .md file when --root-is-file is active.
 
-    E.g. if BASE_DIR contains 'Fraud Control.md' and 'Fraud Control/' this
-    returns 'Fraud Control'.  The root file's content is uploaded directly to
-    the target Notion page rather than creating an extra child page for it.
-    Returns None if no such pair is found.
+    Requires exactly one .md file at BASE_DIR root with a matching subfolder
+    (e.g. 'Fraud Control.md' + 'Fraud Control/').  Returns None in all other
+    cases so normal child-page behaviour is preserved.
     """
+    if not ROOT_IS_FILE:
+        return None
     try:
-        for entry in os.scandir(BASE_DIR):
-            if entry.is_file() and entry.name.endswith(".md"):
-                stem = os.path.splitext(entry.name)[0]
-                if os.path.isdir(os.path.join(BASE_DIR, stem)):
-                    return stem
+        md_files = [
+            e for e in os.scandir(BASE_DIR)
+            if e.is_file() and e.name.endswith(".md")
+        ]
+        if len(md_files) != 1:
+            print(f"{YELLOW}--root-is-file ignored: expected exactly 1 .md file at root, found {len(md_files)}.{RESET}")
+            return None
+        stem = os.path.splitext(md_files[0].name)[0]
+        if not os.path.isdir(os.path.join(BASE_DIR, stem)):
+            print(f"{YELLOW}--root-is-file ignored: no matching subfolder '{stem}/' found.{RESET}")
+            return None
+        return stem
     except Exception:
-        pass
-    return None
+        return None
 
 
 def _extract_title(file_name: str, md_content: str) -> str:

@@ -17,6 +17,10 @@ HEADERS = {
 # Directory for documentation
 BASE_DIR = "docs"
 
+# When True, the single root .md file in BASE_DIR is treated as the content of
+# the target Notion page itself (set via --root-is-file on the sync command).
+ROOT_IS_FILE = False
+
 # Notion API constraints
 BLOCK_LIMIT = 100
 MAX_BLOCK_TEXT_LENGTH = 2000

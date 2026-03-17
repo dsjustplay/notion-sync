@@ -31,6 +31,17 @@ def _parse_args():
         action="store_true",
         help="Preview what would be created, updated, or deleted without making any changes to Notion.",
     )
+    sync_parser.add_argument(
+        "--root-is-file",
+        action="store_true",
+        help=(
+            "Treat the single root .md file as the content of the target page itself. "
+            "Its content is written directly to the target page; files in the matching "
+            "subfolder become direct children of the target. "
+            "Use this when docs_dir contains exactly one .md file paired with a subfolder "
+            "of the same name (e.g. 'Fraud Control.md' + 'Fraud Control/')."
+        ),
+    )
 
     # -- pull subcommand (download Notion → local) ----------------------------
     pull_parser = subparsers.add_parser(
@@ -55,8 +66,10 @@ _args = _parse_args()
 import config  # noqa: E402
 if _args.command == "sync":
     config.BASE_DIR = os.path.abspath(_args.docs_dir)
+    config.ROOT_IS_FILE = _args.root_is_file
 else:
     config.BASE_DIR = os.path.abspath(_args.target_dir)
+    config.ROOT_IS_FILE = False
 
 import time  # noqa: E402
 from utils import find_md_files  # noqa: E402
