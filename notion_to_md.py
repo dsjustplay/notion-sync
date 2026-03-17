@@ -102,8 +102,11 @@ def download_image(url: str, dest_dir: str, hint: str = "image") -> str | None:
     assets_dir = os.path.join(dest_dir, "assets")
     os.makedirs(assets_dir, exist_ok=True)
 
-    ext = os.path.splitext(url.split("?")[0])[1] or ".png"
-    filename = _sanitise_filename(hint) + ext
+    # Prefer the original filename embedded in the URL (present in Notion S3 URLs).
+    url_path = url.split("?")[0]
+    url_basename = _sanitise_filename(os.path.basename(url_path))
+    ext = os.path.splitext(url_path)[1] or ".png"
+    filename = url_basename if url_basename else (_sanitise_filename(hint) + ext)
     dest_path = os.path.join(assets_dir, filename)
 
     try:
@@ -186,9 +189,7 @@ def blocks_to_md(blocks: list, page_dir: str, indent: int = 0) -> str:
             url = img.get(img_type, {}).get("url", "") if img_type else ""
             caption_list = img.get("caption", [])
             alt = rich_text_to_md(caption_list) if caption_list else "image"
-            # Prefix with block ID to guarantee unique filenames across a page.
-            block_prefix = block.get("id", "")[:8].replace("-", "")
-            hint = block_prefix + "-" + (_sanitise_filename(alt[:32]) or "image")
+            hint = _sanitise_filename(alt[:40]) or "image"
             local_path = download_image(url, page_dir, hint)
             if local_path:
                 lines.append(f"![{alt}]({local_path})")
