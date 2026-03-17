@@ -55,18 +55,22 @@ def rich_text_to_md(rich_text: list) -> str:
 # ---------------------------------------------------------------------------
 
 # Block types whose children are fetched during block retrieval.
-# Deliberately excludes list item types (bulleted_list_item, numbered_list_item, to_do)
-# to avoid O(n) API calls on pages with many list items — nested list content
-# is included in the parent block's rich_text so nothing is lost.
 _RECURSE_TYPES = {
     "toggle",
     "column_list",
     "column",
-    "table",          # needs table_row children
+    "table",                # needs table_row children
+    "bulleted_list_item",   # nested sub-bullets
+    "numbered_list_item",   # nested sub-items
+    "to_do",                # nested sub-tasks
 }
 
+# Maximum nesting depth for list item recursion (prevents runaway API calls
+# on pathologically deep pages).
+_MAX_RECURSE_DEPTH = 4
 
-def fetch_blocks_recursive(block_id: str) -> list:
+
+def fetch_blocks_recursive(block_id: str, depth: int = 0) -> list:
     """Fetch all blocks under block_id, recursively expanding children only
     for block types that require nested content for Markdown rendering."""
     blocks = []
@@ -84,8 +88,8 @@ def fetch_blocks_recursive(block_id: str) -> list:
         data = resp.json()
         for block in data.get("results", []):
             btype = block.get("type")
-            if block.get("has_children") and btype in _RECURSE_TYPES:
-                block["_children"] = fetch_blocks_recursive(block["id"])
+            if block.get("has_children") and btype in _RECURSE_TYPES and depth < _MAX_RECURSE_DEPTH:
+                block["_children"] = fetch_blocks_recursive(block["id"], depth + 1)
             blocks.append(block)
         next_cursor = data.get("next_cursor")
         if not next_cursor:
@@ -114,7 +118,17 @@ def download_image(url: str, dest_dir: str, hint: str = "image") -> str | None:
     url_path = url.split("?")[0]
     url_basename = _sanitise_filename(urllib.parse.unquote(os.path.basename(url_path)))
     ext = os.path.splitext(urllib.parse.unquote(url_path))[1] or ".png"
-    filename = url_basename if url_basename else (_sanitise_filename(hint) + ext)
+    base_filename = url_basename if url_basename else (_sanitise_filename(hint) + ext)
+
+    # Avoid overwriting an existing file with the same name (e.g. multiple
+    # Notion screenshots all called "image.png"). Append _2, _3, … as needed.
+    filename = base_filename
+    stem, suffix = os.path.splitext(base_filename)
+    counter = 2
+    while os.path.exists(os.path.join(assets_dir, filename)):
+        filename = f"{stem}_{counter}{suffix}"
+        counter += 1
+
     dest_path = os.path.join(assets_dir, filename)
 
     try:
