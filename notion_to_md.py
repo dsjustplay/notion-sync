@@ -327,6 +327,10 @@ def _pull_database(database_id: str, db_title: str, target_dir: str):
     # Pull the database page's own content blocks as the root file.
     _pull_page(database_id, db_title, target_dir, target_dir)
 
+    # Rows (database pages) go into a subfolder named after the database,
+    # consistent with how page-tree children are placed under their parent.
+    rows_dir = os.path.join(target_dir, _sanitise_filename(db_title))
+
     url = f"https://api.notion.com/v1/databases/{database_id}/query"
     next_cursor = None
     while True:
@@ -348,8 +352,8 @@ def _pull_database(database_id: str, db_title: str, target_dir: str):
                     break
             if not title:
                 title = page_id
-            _pull_page(page_id, title, target_dir, target_dir)
-            _pull_children(page_id, title, target_dir, target_dir)
+            _pull_page(page_id, title, rows_dir, target_dir)
+            _pull_children(page_id, title, rows_dir, target_dir)
         next_cursor = data.get("next_cursor")
         if not next_cursor:
             break
