@@ -4,6 +4,7 @@ venv/
 .env
 __pycache__/
 *.pyc
+docs_imported/
 docs/
 sync_state.json
 setup.cfg

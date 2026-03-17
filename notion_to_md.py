@@ -186,7 +186,9 @@ def blocks_to_md(blocks: list, page_dir: str, indent: int = 0) -> str:
             url = img.get(img_type, {}).get("url", "") if img_type else ""
             caption_list = img.get("caption", [])
             alt = rich_text_to_md(caption_list) if caption_list else "image"
-            hint = _sanitise_filename(alt[:40]) or "image"
+            # Prefix with block ID to guarantee unique filenames across a page.
+            block_prefix = block.get("id", "")[:8].replace("-", "")
+            hint = block_prefix + "-" + (_sanitise_filename(alt[:32]) or "image")
             local_path = download_image(url, page_dir, hint)
             if local_path:
                 lines.append(f"![{alt}]({local_path})")
