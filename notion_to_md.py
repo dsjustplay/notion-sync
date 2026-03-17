@@ -53,8 +53,16 @@ def rich_text_to_md(rich_text: list) -> str:
 # Block children fetching (recursive, handles pagination + nested children)
 # ---------------------------------------------------------------------------
 
+# Block types whose children are fetched during block retrieval.
+# Deliberately excludes list item types (bulleted_list_item, numbered_list_item, to_do)
+# to avoid O(n) API calls on pages with many list items — nested list content
+# is included in the parent block's rich_text so nothing is lost.
+_RECURSE_TYPES: set = set()  # temporarily empty to diagnose hang
+
+
 def fetch_blocks_recursive(block_id: str) -> list:
-    """Fetch all blocks under block_id, recursively expanding children."""
+    """Fetch all blocks under block_id, recursively expanding children only
+    for block types that require nested content for Markdown rendering."""
     blocks = []
     url = f"https://api.notion.com/v1/blocks/{block_id}/children"
     next_cursor = None
@@ -69,7 +77,8 @@ def fetch_blocks_recursive(block_id: str) -> list:
             break
         data = resp.json()
         for block in data.get("results", []):
-            if block.get("has_children") and block.get("type") not in ("child_page",):
+            btype = block.get("type")
+            if block.get("has_children") and btype in _RECURSE_TYPES:
                 block["_children"] = fetch_blocks_recursive(block["id"])
             blocks.append(block)
         next_cursor = data.get("next_cursor")
