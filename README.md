@@ -96,10 +96,148 @@ python main.py <docs_dir> --dry-run
 
 ## How it works
 
-1. **Cold start**: If `sync_state.json` is missing or empty, the tool walks the live Notion tree under the root page and reconciles any already-existing pages with your local files — nothing gets duplicated.
-2. **Incremental sync**: Files are compared by SHA-256 hash. Unchanged files are skipped. Changed files are diffed block-by-block; only modified blocks are updated.
-3. **Deletion**: Delete a local `.md` file and the next sync archives the corresponding Notion page automatically.
-4. **Re-creation**: If a Notion page is manually deleted or archived, the tool detects the 404 and re-creates it on the next run.
+### Two-phase sync
+
+Every run processes files in two phases to ensure internal links always resolve correctly.
+
+**Phase 1 — Create page structure.**
+For every `.md` file, the tool ensures a Notion page exists (title only, no content yet) using [`POST /v1/pages`](https://developers.notion.com/reference/post-page). At the end of Phase 1 it has a complete `filename → Notion URL` map covering all pages.
+
+**Phase 2 — Sync content.**
+Each file is re-read, its internal `.md` links are rewritten to Notion URLs (using the Phase 1 map), and the content is uploaded. The split is necessary because a link to page B can only be resolved once page B already exists.
+
+### Content hashing
+
+A SHA-256 of the full markdown text is stored in `sync_state.json` for each file. On subsequent runs:
+- Hash **unchanged** → file is skipped, no Notion API call.
+- Hash **changed or absent** → content is uploaded.
+
+### Block-level diffing
+
+For pages with existing content, the tool:
+1. Fetches current blocks via [`GET /v1/blocks/{page_id}/children`](https://developers.notion.com/reference/get-block-children).
+2. Computes a fingerprint for each block (type + text content).
+3. Runs Python's `SequenceMatcher` to produce a minimal diff (keep / delete / insert / replace).
+4. Executes only what changed: [`DELETE /v1/blocks/{block_id}`](https://developers.notion.com/reference/delete-a-block) for removed blocks, [`PATCH /v1/blocks/{page_id}/children`](https://developers.notion.com/reference/patch-block-children) with an `after` cursor for insertions.
+
+If new content must be inserted before the very first block (Notion has no `before` parameter), the tool falls back to deleting all blocks and re-uploading the full page.
+
+Brand-new pages (just created in Phase 1) skip the fetch and diff entirely — content is uploaded directly.
+
+### Image upload
+
+Images are uploaded via Notion's [File Upload API](https://developers.notion.com/reference/create-a-file-upload) in two steps:
+1. **`POST /v1/file_uploads`** — creates an upload object and returns an `upload_url` and `file_upload_id`.
+2. **`POST {upload_url}`** — sends the image bytes as `multipart/form-data`.
+
+The `file_upload_id` and a SHA-256 of the image file are cached in `sync_state.json`. Unchanged images reuse the cached ID — no re-upload. Changed images repeat the two-step process and replace the old block.
+
+### Internal link resolution
+
+When rewriting `.md` links to Notion URLs, three passes are tried in order (first match wins):
+1. **Direct match** — filename matches exactly (after URL-decoding).
+2. **UUID strip** — removes the 32-character hex suffix Notion appends to exported filenames (e.g. `Page 3a9f...abcd.md` → `Page.md`).
+3. **Slug match** — normalises both sides to lowercase + hyphens (e.g. `fraud-score-system.md` matches `Fraud Score System.md`).
+
+Unresolved links are left as plain text.
+
+### Markdown elements supported
+
+Headings (H1–H3), paragraphs, bullet and numbered lists (up to 3 levels of nesting), to-do items, blockquotes, code blocks (with syntax highlighting), tables (chunked at 100 rows per Notion limit), horizontal rules, inline formatting (bold, italic, bold-italic, strikethrough, inline code, hyperlinks), and images.
+
+---
+
+## Expected output
+
+### First run (cold start — no `sync_state.json`)
+
+```
+No local state found. Discovering existing Notion pages (one-time)...
+Fetching All Notion Pages to compare with local...
+Reconciled 0 page(s) and 0 folder(s) from Notion.
+Found 21 Markdown file(s). Starting sync...
+Creating new Notion page: Fraud Control
+Mapped Fraud Control.md -> https://www.notion.so/Fraud-Control-<page_id>
+...
+Page 'Fraud Control.md' content has changed. Syncing...
+Successfully updated Notion page (ID: <page_id>)
+...
+
+======Sync Summary======
+Total Files: 21
+Create: 21
+Update: 21
+All files synced successfully!
+
+Total time taken: 0h 4m 19.00s
+```
+
+### Subsequent run — nothing changed
+
+```
+Found 21 Markdown file(s). Starting sync...
+Mapped Fraud Control.md -> https://www.notion.so/Fraud-Control-<page_id>
+...
+Page 'Fraud Control.md' unchanged. Skipping.
+...
+
+======Sync Summary======
+Total Files: 21
+Skipped: 21 (Already up to date)
+All files synced successfully!
+
+Total time taken: 0h 0m 8.00s
+```
+
+### Subsequent run — some files changed
+
+```
+Found 21 Markdown file(s). Starting sync...
+Mapped Fraud Control.md -> https://www.notion.so/Fraud-Control-<page_id>
+...
+Page 'Fraud Control.md' unchanged. Skipping.
+Page 'User verification.md' content has changed. Syncing...
+Successfully updated Notion page (ID: <page_id>)
+...
+
+======Sync Summary======
+Total Files: 21
+Update: 3
+Skipped: 18 (Already up to date)
+All files synced successfully!
+
+Total time taken: 0h 0m 35.00s
+```
+
+### Dry run
+
+```
+DRY RUN — no changes will be made to Notion.
+
+Found 21 Markdown file(s). Starting sync...
+[dry] Would create: 'New Page'
+  [dry] diff — keep: 45, delete: 2, insert: 3
+...
+
+======Dry Run Sync Summary======
+Total Files: 21
+[dry] Would Create: 1
+[dry] Would Update: 3
+Skipped: 17 (Already up to date)
+Dry run complete — no changes made to Notion.
+
+Total time taken: 0h 0m 6.00s
+```
+
+### A local file was deleted
+
+```
+Detected missing file: Fraud Control/old-page.md | Archiving Notion page...
+Successfully archived Notion page (ID: <page_id>)
+Archived 1 missing page(s).
+Found 20 Markdown file(s). Starting sync...
+...
+```
 
 ## File Structure
 
