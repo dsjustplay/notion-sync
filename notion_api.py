@@ -98,6 +98,10 @@ def _block_fingerprint(block: dict) -> str:
     if btype == "divider":
         return "divider"
 
+    if btype == "bookmark":
+        url = block.get("bookmark", {}).get("url", "")
+        return f"bookmark:{url}"
+
     block_data = block.get(btype, {})
     rich_text = block_data.get("rich_text", [])
     text = "".join(rt.get("text", {}).get("content", "") for rt in rich_text)

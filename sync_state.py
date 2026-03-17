@@ -53,7 +53,7 @@ class SyncState:
 
     def get_page_hash(self, local_path: str) -> str | None:
         entry = self._data["pages"].get(local_path)
-        return entry["content_hash"] if entry else None
+        return entry.get("content_hash") if entry else None
 
     def set_page_hash(self, local_path: str, content_hash: str):
         entry = self._data["pages"].setdefault(local_path, {"notion_id": None, "content_hash": None})
