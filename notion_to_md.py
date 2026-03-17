@@ -59,6 +59,7 @@ _RECURSE_TYPES = {
     "toggle",
     "column_list",
     "column",
+    "callout",              # callout body children
     "table",                # needs table_row children
     "bulleted_list_item",   # nested sub-bullets
     "numbered_list_item",   # nested sub-items
@@ -198,6 +199,18 @@ def blocks_to_md(blocks: list, page_dir: str, indent: int = 0, page_title: str =
             lang = data.get("language", "plain text")
             code = rich_text_to_md(data.get("rich_text", []))
             lines.append(f"```{lang}\n{code}\n```")
+
+        elif btype == "callout":
+            text = rich_text_to_md(data.get("rich_text", []))
+            lines.append(f"> [callout]: {text}")
+            if children:
+                lines.append(blocks_to_md(children, page_dir, indent + 1, page_title=page_title))
+
+        elif btype == "bookmark":
+            url = data.get("url", "")
+            if url:
+                lines.append(f"> [bookmark]: {url}")
+            # else: empty bookmark, skip silently
 
         elif btype == "quote":
             text = rich_text_to_md(data.get("rich_text", []))

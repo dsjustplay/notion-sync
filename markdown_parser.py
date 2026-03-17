@@ -263,7 +263,7 @@ def enforce_rich_text_limits(block):
         # Update the token list in the block.
         if block_type == "paragraph":
             block["paragraph"]["rich_text"] = new_tokens
-        elif block_type in ["heading_1", "heading_2", "heading_3", "quote"]:
+        elif block_type in ["heading_1", "heading_2", "heading_3", "quote", "callout"]:
             block[block_type]["rich_text"] = new_tokens
         elif block_type in ["bulleted_list_item", "numbered_list_item", "to_do"]:
             block[block_type]["rich_text"] = new_tokens
@@ -283,6 +283,7 @@ STRUCTURAL_BLOCK_TYPES = {
     "heading_1", "heading_2", "heading_3",
     "divider", "image", "code", "table",
     "bulleted_list_item", "numbered_list_item",
+    "callout", "bookmark",
 }
 
 
@@ -312,6 +313,7 @@ def md_to_notion_blocks(md_content, base_path=".", dry_run=False):
     code_lines = []
     list_stack = []
     table_rows = []
+    pending_table_line = ""   # accumulates a multi-line table row
     current_list_item = None
     current_item_indent = 0
 
@@ -439,12 +441,30 @@ def md_to_notion_blocks(md_content, base_path=".", dry_run=False):
         elif in_code_block:
             code_lines.append(line)
 
-        # Table handling
-        elif re.match(r"^\|(.+)\|$", line):
-            table_row = [cell.strip() for cell in line.split("|")[1:-1]]
-            if not all(re.match(r"^-+$", cell) for cell in table_row):
-                table_rows.append(table_row)
+        # Table handling — supports multi-line cells (Notion exports can split
+        # a single cell's content across multiple physical lines).
+        elif pending_table_line or re.match(r"^\|", line):
+            if pending_table_line:
+                # Continue accumulating until the combined line ends with "|"
+                combined = pending_table_line + " " + line.strip()
+                if combined.rstrip().endswith("|"):
+                    full_line = combined.rstrip()
+                    pending_table_line = ""
+                    table_row = [cell.strip() for cell in full_line.split("|")[1:-1]]
+                    if not all(re.match(r"^-+$", cell) for cell in table_row):
+                        table_rows.append(table_row)
+                else:
+                    pending_table_line = combined
+            elif line.rstrip().endswith("|"):
+                # Complete single-line row
+                table_row = [cell.strip() for cell in line.split("|")[1:-1]]
+                if not all(re.match(r"^-+$", cell) for cell in table_row):
+                    table_rows.append(table_row)
+            else:
+                # Row starts here but cell content continues on next line(s)
+                pending_table_line = line.rstrip()
         elif table_rows and (line.strip() == "" or not line.startswith("|")):
+            pending_table_line = ""
             process_table()
 
         # Headings
@@ -568,6 +588,26 @@ def md_to_notion_blocks(md_content, base_path=".", dry_run=False):
             elif text == "[synced_block]: [synced_block]":
                 # Live synced blocks can't be round-tripped; drop silently
                 pass
+            elif text.startswith("[callout]:"):
+                callout_text = text[len("[callout]:"):].strip()
+                _append_structural(blocks, {
+                    "object": "block",
+                    "type": "callout",
+                    "callout": {
+                        "rich_text": format_rich_text(callout_text),
+                        "icon": {"type": "emoji", "emoji": "⚠️"},
+                        "color": "yellow_background",
+                    }
+                })
+            elif text.startswith("[bookmark]:"):
+                bookmark_url = text[len("[bookmark]:"):].strip()
+                if bookmark_url and bookmark_url != "[bookmark]" and is_valid_url(bookmark_url):
+                    _append_structural(blocks, {
+                        "object": "block",
+                        "type": "bookmark",
+                        "bookmark": {"url": bookmark_url, "caption": []}
+                    })
+                # else: no valid URL (e.g. "[bookmark]: [bookmark]") — drop silently
             else:
                 _append_structural(blocks, {
                     "object": "block",
@@ -646,6 +686,14 @@ def md_to_notion_blocks(md_content, base_path=".", dry_run=False):
                     blocks.append(paragraph_block)
                 current_list_item = None
                 current_item_indent = 0
+
+    # Flush any pending multi-line row before final table processing.
+    if pending_table_line:
+        full_line = pending_table_line.rstrip()
+        if full_line.endswith("|"):
+            table_row = [cell.strip() for cell in full_line.split("|")[1:-1]]
+            if not all(re.match(r"^-+$", cell) for cell in table_row):
+                table_rows.append(table_row)
 
     process_table()
 
