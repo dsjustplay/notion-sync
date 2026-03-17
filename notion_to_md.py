@@ -302,18 +302,65 @@ def _pull_children(page_id: str, page_title: str, dest_dir: str, base_dir: str):
             break
 
 
-def pull_from_notion(target_dir: str, root_page_id: str):
-    """Entry point: pull a full Notion page tree into target_dir."""
+def _pull_database(database_id: str, db_title: str, target_dir: str):
+    """Pull every page in a Notion database into target_dir."""
+    print(f"Database: {db_title}")
+    url = f"https://api.notion.com/v1/databases/{database_id}/query"
+    next_cursor = None
+    while True:
+        body = {"page_size": 100}
+        if next_cursor:
+            body["start_cursor"] = next_cursor
+        resp = session.post(url, headers=HEADERS, json=body, timeout=REQUEST_TIMEOUT)
+        if resp.status_code != 200:
+            print(f"{RED}Error querying database {database_id}: {resp.status_code}{RESET}")
+            break
+        data = resp.json()
+        for row in data.get("results", []):
+            page_id = row["id"]
+            # Find the title property (type=="title")
+            title = ""
+            for prop in row.get("properties", {}).values():
+                if prop.get("type") == "title":
+                    title = "".join(t.get("plain_text", "") for t in prop.get("title", []))
+                    break
+            if not title:
+                title = page_id
+            _pull_page(page_id, title, target_dir, target_dir)
+            _pull_children(page_id, title, target_dir, target_dir)
+        next_cursor = data.get("next_cursor")
+        if not next_cursor:
+            break
+
+
+def pull_from_notion(target_dir: str, root_id: str):
+    """Entry point: pull a full Notion page tree or database into target_dir.
+
+    Auto-detects whether root_id is a regular page or a database and
+    handles each accordingly.
+    """
     os.makedirs(target_dir, exist_ok=True)
     state.load()
-    state.set_notion_root_page_id(root_page_id)
+    state.set_notion_root_page_id(root_id)
 
-    print(f"Pulling from Notion page {root_page_id} into {target_dir} ...")
-    root_title = _page_title(root_page_id)
-    print(f"Root page: {root_title}")
+    print(f"Pulling from Notion {root_id} into {target_dir} ...")
 
-    _pull_page(root_page_id, root_title, target_dir, target_dir)
-    _pull_children(root_page_id, root_title, target_dir, target_dir)
+    # Try as a page first, fall back to database.
+    resp = session.get(f"https://api.notion.com/v1/pages/{root_id}", headers=HEADERS, timeout=REQUEST_TIMEOUT)
+    if resp.status_code == 200:
+        root_title = _page_title(root_id)
+        print(f"Root page: {root_title}")
+        _pull_page(root_id, root_title, target_dir, target_dir)
+        _pull_children(root_id, root_title, target_dir, target_dir)
+    else:
+        resp2 = session.get(f"https://api.notion.com/v1/databases/{root_id}", headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        if resp2.status_code == 200:
+            db = resp2.json()
+            db_title = "".join(t.get("plain_text", "") for t in db.get("title", []))
+            _pull_database(root_id, db_title, target_dir)
+        else:
+            print(f"{RED}Could not resolve {root_id} as a page or database.{RESET}")
+            return
 
     state.save()
     total = len(state.all_pages())
