@@ -403,6 +403,8 @@ def delete_existing_content(page_id):
         # Delete each block in the current batch.
         for block in blocks:
             if block["object"] == "block" and block.get("id"):
+                if block.get("type") == "child_page":
+                    continue  # Never delete sub-pages
                 block_id = block.get("id")
                 del_response = session.delete(f"https://api.notion.com/v1/blocks/{block_id}", headers=HEADERS, timeout=REQUEST_TIMEOUT)
                 if del_response.status_code != 200:
@@ -638,7 +640,8 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
                 existing_page_id = None
                 # fall through to the creation block below
             else:
-                status = sync_page_blocks(existing_page_id, existing_blocks, blocks, dry_run=dry_run)
+                content_blocks = [b for b in existing_blocks if b.get("type") != "child_page"]
+                status = sync_page_blocks(existing_page_id, content_blocks, blocks, dry_run=dry_run)
                 if status == "failed":
                     return ("failed", existing_page_id)
                 if not dry_run:
