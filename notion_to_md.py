@@ -57,7 +57,12 @@ def rich_text_to_md(rich_text: list) -> str:
 # Deliberately excludes list item types (bulleted_list_item, numbered_list_item, to_do)
 # to avoid O(n) API calls on pages with many list items — nested list content
 # is included in the parent block's rich_text so nothing is lost.
-_RECURSE_TYPES: set = set()  # temporarily empty to diagnose hang
+_RECURSE_TYPES = {
+    "toggle",
+    "column_list",
+    "column",
+    "table",          # needs table_row children
+}
 
 
 def fetch_blocks_recursive(block_id: str) -> list:
