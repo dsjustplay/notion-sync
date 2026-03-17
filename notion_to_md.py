@@ -317,8 +317,16 @@ def _pull_children(page_id: str, page_title: str, dest_dir: str, base_dir: str):
 
 
 def _pull_database(database_id: str, db_title: str, target_dir: str):
-    """Pull every page in a Notion database into target_dir."""
+    """Pull every page in a Notion database into target_dir.
+
+    Also pulls the content blocks of the database page itself (the text that
+    sits above the table view in Notion) and saves it as <db_title>.md.
+    """
     print(f"Database: {db_title}")
+
+    # Pull the database page's own content blocks as the root file.
+    _pull_page(database_id, db_title, target_dir, target_dir)
+
     url = f"https://api.notion.com/v1/databases/{database_id}/query"
     next_cursor = None
     while True:
