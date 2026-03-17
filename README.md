@@ -71,9 +71,14 @@ cp sync_state.json.example <docs_dir>/sync_state.json
 
 ## Usage
 
+The tool has two subcommands:
+
 ```sh
-python main.py <docs_dir> [--root-page-id PAGE_ID] [--dry-run]
+python main.py sync <docs_dir> [--root-page-id PAGE_ID] [--dry-run]
+python main.py pull <target_dir> --root-page-id PAGE_ID
 ```
+
+### `sync` — push local Markdown to Notion
 
 | Argument | Required | Description |
 |---|---|---|
@@ -81,18 +86,29 @@ python main.py <docs_dir> [--root-page-id PAGE_ID] [--dry-run]
 | `--root-page-id` | First run only | Notion page ID to sync under; saved to `sync_state.json` for subsequent runs |
 | `--dry-run` | Optional | Preview what would be created, updated, or archived — no changes made to Notion |
 
-### Examples
-
 ```sh
 # First run — provide the root page ID once
-python main.py <docs_dir> --root-page-id YOUR_PAGE_ID
+python main.py sync <docs_dir> --root-page-id YOUR_PAGE_ID
 
 # Subsequent runs — root page ID is read from sync_state.json
-python main.py <docs_dir>
+python main.py sync <docs_dir>
 
 # Preview changes without touching Notion
-python main.py <docs_dir> --dry-run
+python main.py sync <docs_dir> --dry-run
 ```
+
+### `pull` — download Notion pages to local Markdown
+
+| Argument | Required | Description |
+|---|---|---|
+| `target_dir` | Always | Local directory to write downloaded Markdown files into |
+| `--root-page-id` | Always | Notion page ID to pull from |
+
+```sh
+python main.py pull <target_dir> --root-page-id YOUR_PAGE_ID
+```
+
+Downloads the full page tree, saves images locally under `assets/` subfolders, and writes a `sync_state.json` ready for subsequent `sync` runs.
 
 ## How it works
 
@@ -149,10 +165,10 @@ Headings (H1–H3), paragraphs, bullet and numbered lists (up to 3 levels of nes
 
 ## Expected output
 
-### First run (cold start — no `sync_state.json`)
+### `sync` — first run (cold start — no `sync_state.json`)
 
 ```sh
-python main.py <docs_dir> --root-page-id YOUR_PAGE_ID
+python main.py sync <docs_dir> --root-page-id YOUR_PAGE_ID
 ```
 ```
 No local state found. Discovering existing Notion pages (one-time)...
@@ -175,10 +191,10 @@ All files synced successfully!
 Total time taken: 0h 4m 19.00s
 ```
 
-### Subsequent run — nothing changed
+### `sync` — subsequent run, nothing changed
 
 ```sh
-python main.py <docs_dir>
+python main.py sync <docs_dir>
 ```
 ```
 Found 21 Markdown file(s). Starting sync...
@@ -195,10 +211,10 @@ All files synced successfully!
 Total time taken: 0h 0m 8.00s
 ```
 
-### Subsequent run — some files changed
+### `sync` — subsequent run, some files changed
 
 ```sh
-python main.py <docs_dir>
+python main.py sync <docs_dir>
 ```
 ```
 Found 21 Markdown file(s). Starting sync...
@@ -218,10 +234,10 @@ All files synced successfully!
 Total time taken: 0h 0m 35.00s
 ```
 
-### Dry run
+### `sync` — dry run
 
 ```sh
-python main.py <docs_dir> --dry-run
+python main.py sync <docs_dir> --dry-run
 ```
 ```
 DRY RUN — no changes will be made to Notion.
@@ -241,10 +257,10 @@ Dry run complete — no changes made to Notion.
 Total time taken: 0h 0m 6.00s
 ```
 
-### A local file was deleted
+### `sync` — a local file was deleted
 
 ```sh
-python main.py <docs_dir>
+python main.py sync <docs_dir>
 ```
 ```
 Detected missing file: Fraud Control/old-page.md | Archiving Notion page...
@@ -254,13 +270,30 @@ Found 20 Markdown file(s). Starting sync...
 ...
 ```
 
+### `pull`
+
+```sh
+python main.py pull <target_dir> --root-page-id YOUR_PAGE_ID
+```
+```
+Pulling from Notion page YOUR_PAGE_ID into <target_dir> ...
+Root page: Fraud Control
+Downloaded: Fraud Control.md
+Downloaded: Fraud Control/Fraud Score System.md
+Downloaded: Fraud Control/User verification.md
+...
+
+Pull complete — 21 page(s) downloaded to <target_dir>
+```
+
 ## File Structure
 
 ```
 notion-sync/
-├── main.py                    # Entry point and sync orchestration
+├── main.py                    # Entry point; routes sync and pull subcommands
 ├── notion_api.py              # Notion API calls (create, update, diff, archive)
-├── markdown_parser.py         # Markdown → Notion block conversion
+├── notion_to_md.py            # Notion blocks → Markdown conversion and pull orchestration
+├── markdown_parser.py         # Markdown → Notion block conversion (sync direction)
 ├── sync_state.py              # Local state management (sync_state.json)
 ├── image_uploader.py          # Image upload via Notion file upload API
 ├── config.py                  # Constants and environment variable loading

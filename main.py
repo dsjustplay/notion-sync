@@ -8,28 +8,55 @@ from urllib.parse import quote
 # ---------------------------------------------------------------------------
 def _parse_args():
     parser = argparse.ArgumentParser(
-        description="Sync local Markdown files to Notion.",
+        description="Sync local Markdown files to/from Notion.",
     )
-    parser.add_argument(
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # -- sync subcommand (push local → Notion) --------------------------------
+    sync_parser = subparsers.add_parser(
+        "sync",
+        help="Push local Markdown files to Notion.",
+    )
+    sync_parser.add_argument(
         "docs_dir",
-        help="Path to the folder containing Markdown files to sync (e.g. /path/to/docs).",
+        help="Path to the folder containing Markdown files to sync.",
     )
-    parser.add_argument(
+    sync_parser.add_argument(
         "--root-page-id",
         metavar="PAGE_ID",
         help="Notion page ID to sync under. Required on the first run; stored in sync_state.json afterwards.",
     )
-    parser.add_argument(
+    sync_parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Preview what would be created, updated, or deleted without making any changes to Notion.",
     )
+
+    # -- pull subcommand (download Notion → local) ----------------------------
+    pull_parser = subparsers.add_parser(
+        "pull",
+        help="Download a Notion page tree to local Markdown files.",
+    )
+    pull_parser.add_argument(
+        "target_dir",
+        help="Local directory to write downloaded Markdown files into.",
+    )
+    pull_parser.add_argument(
+        "--root-page-id",
+        metavar="PAGE_ID",
+        required=True,
+        help="Notion page ID to pull from.",
+    )
+
     return parser.parse_args()
 
 _args = _parse_args()
 
 import config  # noqa: E402
-config.BASE_DIR = os.path.abspath(_args.docs_dir)
+if _args.command == "sync":
+    config.BASE_DIR = os.path.abspath(_args.docs_dir)
+else:
+    config.BASE_DIR = os.path.abspath(_args.target_dir)
 
 import time  # noqa: E402
 from utils import find_md_files  # noqa: E402
@@ -37,6 +64,7 @@ from notion_api import upload_markdown_file_to_notion, delete_notion_page_if_mis
 from markdown_parser import replace_md_links  # noqa: E402
 from config import RED, YELLOW, GREEN, RESET  # noqa: E402
 from sync_state import state  # noqa: E402
+from notion_to_md import pull_from_notion  # noqa: E402
 
 def sync_markdown_to_notion():
     """
@@ -55,7 +83,7 @@ def sync_markdown_to_notion():
     state.load()
 
     # Resolve Notion root page ID: CLI arg takes precedence, then state, then error.
-    if _args.root_page_id:
+    if _args.root_page_id:  # argparse converts --root-page-id to root_page_id
         state.set_notion_root_page_id(_args.root_page_id)
         if not dry_run:
             state.save()
@@ -186,6 +214,9 @@ def sync_markdown_to_notion():
 
 if __name__ == "__main__":
     try:
-        sync_markdown_to_notion()
+        if _args.command == "sync":
+            sync_markdown_to_notion()
+        elif _args.command == "pull":
+            pull_from_notion(config.BASE_DIR, _args.root_page_id)
     except KeyboardInterrupt:
         print(f"\n{RED}Aborted{RESET}")
