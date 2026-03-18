@@ -129,9 +129,10 @@ class NotionRootContext:
     are regular child pages (parent: {page_id: ...}).
     """
 
-    def __init__(self, root_id: str, root_type: str):
+    def __init__(self, root_id: str, root_type: str, root_accepts_blocks: bool = True):
         self.root_id = root_id
         self.root_type = root_type  # "page" | "database"
+        self.root_accepts_blocks = root_accepts_blocks  # False for standalone databases
 
     @staticmethod
     def _norm(page_id: str) -> str:
@@ -235,7 +236,12 @@ def init_root_context(root_id: str) -> NotionRootContext:
     print(f"{GREEN}Root type detected: {root_type}{RESET}")
     state.set_root_type(root_type)
     state.save()
-    _root_context = NotionRootContext(root_id, root_type)
+
+    # Notion does not allow appending content blocks to a database object via the API.
+    # A database root therefore cannot accept the root .md file's content.
+    root_accepts_blocks = root_type != "database"
+
+    _root_context = NotionRootContext(root_id, root_type, root_accepts_blocks)
     return _root_context
 
 
