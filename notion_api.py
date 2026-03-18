@@ -759,7 +759,7 @@ def upload_blocks_to_notion(page_id, blocks):
     return "updated"
 
 def upload_markdown_file_to_notion(file_path, update_content=False, new_content=None,
-                                   dry_run: bool = False):
+                                   dry_run: bool = False, raw_content: str | None = None):
     """Upload a Markdown file as a Notion page inside its folder structure.
 
     If update_content is False, a minimal content is uploaded (or the page is created if missing).
@@ -798,7 +798,9 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
             print(f"{RED}Error reading {file_path}: {e}{RESET}")
             return ("failed", None)
 
-        current_hash = _md_hash(md_content)
+        # Hash the raw file content (before link substitution) so the stored hash
+        # stays consistent with what the pull command writes.
+        current_hash = _md_hash(raw_content if raw_content is not None else md_content)
         if state.get_page_hash(state_key) == current_hash:
             print(f"Page '{file_name}' unchanged. Skipping.")
             return ("skipped", root_page_id)
@@ -867,7 +869,9 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
     if existing_page_id:
         if update_content:
             # Fast path: skip if the markdown content hasn't changed since last sync.
-            current_hash = _md_hash(md_content)
+            # Always hash the raw file content (before link substitution) for consistency
+            # with what the pull command stores.
+            current_hash = _md_hash(raw_content if raw_content is not None else md_content)
             if state.get_page_hash(state_key) == current_hash:
                 print(f"Page '{file_name}' unchanged. Skipping.")
                 return ("skipped", existing_page_id)

@@ -106,7 +106,18 @@ def sync_markdown_to_notion():
         return
 
     # Detect whether the root is a page tree or a Notion database (cached after first run).
-    init_root_context(state.get_notion_root_page_id())
+    root_ctx = init_root_context(state.get_notion_root_page_id())
+
+    # A standalone database (one that doesn't support block children) cannot receive
+    # the root .md file content. Fail early with a clear explanation.
+    if root_ctx.is_database() and not root_ctx.root_accepts_blocks and config.ROOT_IS_FILE:
+        print(
+            f"{RED}Error: --root-is-file is not compatible with a standalone Notion database.{RESET}\n"
+            f"A standalone database has no page layer to write the root .md content to.\n"
+            f"Use a database that is embedded inside a Notion page (open the database, click '···' → 'Open as page', then share that page), "
+            f"or omit --root-is-file and let each .md file become a database row."
+        )
+        return
 
     # Phase 0: Locate all Markdown (.md) files in the base directory.
     md_files = find_md_files(config.BASE_DIR)
@@ -176,7 +187,8 @@ def sync_markdown_to_notion():
 
         updated_content = replace_md_links(md_content, md_to_notion)
         result = upload_markdown_file_to_notion(md_file, update_content=True,
-                                                new_content=updated_content, dry_run=dry_run)
+                                                new_content=updated_content, dry_run=dry_run,
+                                                raw_content=md_content)
         if isinstance(result, tuple):
             status, _ = result
         else:
