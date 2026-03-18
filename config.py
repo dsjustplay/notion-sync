@@ -24,7 +24,7 @@ ROOT_IS_FILE = False
 # Safety kill-switch: when True, ALL write operations to Notion (create, delete,
 # archive, upload) are silently skipped regardless of --dry-run.
 # Flip to False only when you are ready to let the tool make real changes.
-WRITES_DISABLED = True
+WRITES_DISABLED = False
 
 # Notion API constraints
 BLOCK_LIMIT = 100

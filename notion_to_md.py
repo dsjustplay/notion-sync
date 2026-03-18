@@ -245,14 +245,10 @@ def blocks_to_md(blocks: list, page_dir: str, indent: int = 0, page_title: str =
                 lines.append("\n".join(table_lines))
 
         elif btype == "child_page":
-            title = data.get("title", "")
-            safe_title = _sanitise_filename(title)
-            # Child pages live in a sub-folder named after the current page.
-            if page_title:
-                subfolder = _sanitise_filename(page_title)
-                lines.append(f"[{title}]({subfolder}/{safe_title}.md)")
-            else:
-                lines.append(f"[{title}]({safe_title}.md)")
+            # Skip — child pages are pulled as separate .md files by _pull_children.
+            # Emitting inline links here causes duplicates alongside Notion's own
+            # child_page blocks, and those links are filtered out during sync anyway.
+            pass
 
         else:
             # Best-effort fallback for callouts, toggles, columns, etc.
