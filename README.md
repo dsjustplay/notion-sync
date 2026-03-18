@@ -206,10 +206,11 @@ Target page               ← content of Fraud Control.md lives here
 **Requirements for `--root-is-file`:**
 - Exactly **one** `.md` file at the root of `docs_dir`.
 - A subfolder with the **same stem** as that file (e.g. `Fraud Control.md` + `Fraud Control/`).
+- The target root page must be a **regular Notion page**, not a standalone database. The Notion API does not allow appending content blocks directly to a database object — only rows can be created under it.
 
-If either condition is not met the flag is ignored with a warning and normal behaviour applies.
+If the first two conditions are not met the flag is ignored with a warning and normal behaviour applies. If the third condition is not met (database root), the tool exits immediately with an error (see [Expected output — incompatible root type](#sync----root-is-file-with-a-database-root)).
 
-> **Tip:** `pull` always produces this paired structure when the source is a Notion database, so `--root-is-file` is the natural companion flag for a pull → sync round-trip.
+> **Tip:** `pull` always produces this paired structure when the source is a Notion database, so `--root-is-file` is the natural companion flag for a pull → sync round-trip. Point the subsequent sync at a regular Notion **page** (not the database itself) as the root.
 
 ### Markdown elements supported
 
@@ -341,6 +342,24 @@ Create: 20
 Update: 1
 All files synced successfully!
 ```
+
+### `sync` — `--root-is-file` with a database root
+
+If the target root ID points to a **standalone Notion database** (one that has no surrounding page layer), the tool cannot write the root `.md` file's content there and exits immediately:
+
+```sh
+python main.py sync <docs_dir> --root-page-id <database_id> --root-is-file
+```
+```
+Root type detected: database
+Error: --root-is-file is not compatible with a standalone Notion database.
+A standalone database has no page layer to write the root .md content to.
+Use a database that is embedded inside a Notion page (open the database, click '···' → 'Open as page', then share that page), or omit --root-is-file and let each .md file become a database row.
+```
+
+No pages are created or modified. To resolve:
+- **Option A:** Point the sync at a regular Notion **page** instead of the database.
+- **Option B:** Drop `--root-is-file` — the root `.md` file will become a database row like all other files.
 
 ### `pull` — from a page tree
 
