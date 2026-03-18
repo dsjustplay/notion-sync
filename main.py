@@ -73,7 +73,7 @@ else:
 
 import time  # noqa: E402
 from utils import find_md_files  # noqa: E402
-from notion_api import upload_markdown_file_to_notion, delete_notion_page_if_missing, reconcile_state  # noqa: E402
+from notion_api import upload_markdown_file_to_notion, delete_notion_page_if_missing, reconcile_state, init_root_context  # noqa: E402
 from markdown_parser import replace_md_links  # noqa: E402
 from config import RED, YELLOW, GREEN, RESET  # noqa: E402
 from sync_state import state  # noqa: E402
@@ -104,6 +104,9 @@ def sync_markdown_to_notion():
         print(f"{RED}Error: Notion root page ID is not set.{RESET}")
         print(f"Pass it once with --root-page-id <PAGE_ID> and it will be saved for future runs.")
         return
+
+    # Detect whether the root is a page tree or a Notion database (cached after first run).
+    init_root_context(state.get_notion_root_page_id())
 
     # Phase 0: Locate all Markdown (.md) files in the base directory.
     md_files = find_md_files(config.BASE_DIR)

@@ -67,6 +67,179 @@ session.mount("https://", adapter)
 session.mount("http://", adapter)
 
 # ---------------------------------------------------------------------------
+# Root context — detects and caches whether the sync target is a page tree
+# or a Notion database, providing type-aware API helpers for page creation,
+# searching, and state reconciliation.
+# ---------------------------------------------------------------------------
+
+# Module-level singleton set once at startup by init_root_context().
+_root_context: "NotionRootContext | None" = None
+
+
+def _search_db_row(title: str, database_id: str) -> str | None:
+    """Query a Notion database to find a row whose title matches `title`."""
+    resp = session.post(
+        f"https://api.notion.com/v1/databases/{database_id}/query",
+        headers=HEADERS,
+        json={"filter": {"property": "title", "title": {"equals": title}}, "page_size": 10},
+        timeout=REQUEST_TIMEOUT,
+    )
+    if resp.status_code != 200:
+        return None
+    for row in resp.json().get("results", []):
+        for prop in row.get("properties", {}).values():
+            if prop.get("type") == "title":
+                row_title = "".join(t.get("plain_text", "") for t in prop.get("title", []))
+                if row_title == title:
+                    return row["id"]
+    return None
+
+
+def _fetch_child_pages_recursive(parent_id: str, current_path: str) -> dict:
+    """Walk child_page blocks under parent_id, returning {path: page_id} recursively."""
+    pages = {}
+    url = f"https://api.notion.com/v1/blocks/{parent_id}/children"
+    next_cursor = None
+    while True:
+        params = {"page_size": 100}
+        if next_cursor:
+            params["start_cursor"] = next_cursor
+        resp = session.get(url, headers=HEADERS, params=params, timeout=REQUEST_TIMEOUT)
+        if resp.status_code != 200:
+            break
+        data = resp.json()
+        for block in data.get("results", []):
+            if block.get("type") == "child_page":
+                child_id = block["id"]
+                child_title = block["child_page"]["title"].strip()
+                child_path = os.path.join(current_path, child_title)
+                pages[child_path] = child_id
+                pages.update(_fetch_child_pages_recursive(child_id, child_path))
+        next_cursor = data.get("next_cursor")
+        if not next_cursor:
+            break
+    return pages
+
+
+class NotionRootContext:
+    """Encapsulates whether the sync target is a page tree or a Notion database.
+
+    Direct children of a database root are created as database rows
+    (parent: {database_id: ...}).  Deeper pages and all page-tree pages
+    are regular child pages (parent: {page_id: ...}).
+    """
+
+    def __init__(self, root_id: str, root_type: str):
+        self.root_id = root_id
+        self.root_type = root_type  # "page" | "database"
+
+    @staticmethod
+    def _norm(page_id: str) -> str:
+        return page_id.replace("-", "")
+
+    def is_database(self) -> bool:
+        return self.root_type == "database"
+
+    def _is_root(self, page_id: str) -> bool:
+        return self._norm(page_id) == self._norm(self.root_id)
+
+    def parent_dict(self, parent_id: str) -> dict:
+        """Return the correct Notion parent object for creating a page under parent_id.
+
+        When the root is a database and parent_id IS the root, returns
+        {"database_id": root_id} so the new page becomes a DB row.
+        All other cases return {"page_id": parent_id}.
+        """
+        if self.is_database() and self._is_root(parent_id):
+            return {"database_id": self.root_id}
+        return {"page_id": parent_id}
+
+    def search_direct_child(self, title: str, parent_id: str) -> str | None:
+        """Find an existing child page or DB row by title under parent_id.
+
+        Uses a database query when parent_id is the database root;
+        falls back to the block-children search otherwise.
+        """
+        if self.is_database() and self._is_root(parent_id):
+            return _search_db_row(title, self.root_id)
+        return search_existing_page(title, parent_id)
+
+    def discover_pages(self) -> dict:
+        """Return {relative_path: page_id} for all existing pages under the root.
+
+        Used by reconcile_state on the first run to populate local state
+        without making destructive Notion API calls.
+        """
+        if self.is_database():
+            return self._discover_db_pages()
+        return get_all_notion_pages(self.root_id)
+
+    def _discover_db_pages(self) -> dict:
+        """Query all DB rows and recursively collect their child pages."""
+        pages = {}
+        url = f"https://api.notion.com/v1/databases/{self.root_id}/query"
+        next_cursor = None
+        while True:
+            body = {"page_size": 100}
+            if next_cursor:
+                body["start_cursor"] = next_cursor
+            resp = session.post(url, headers=HEADERS, json=body, timeout=REQUEST_TIMEOUT)
+            if resp.status_code != 200:
+                print(f"{RED}Error querying database for page discovery: {resp.status_code}{RESET}")
+                break
+            data = resp.json()
+            for row in data.get("results", []):
+                row_id = row["id"]
+                title = ""
+                for prop in row.get("properties", {}).values():
+                    if prop.get("type") == "title":
+                        title = "".join(t.get("plain_text", "") for t in prop.get("title", []))
+                        break
+                if not title:
+                    continue
+                pages[title] = row_id
+                pages.update(_fetch_child_pages_recursive(row_id, title))
+            next_cursor = data.get("next_cursor")
+            if not next_cursor:
+                break
+        return pages
+
+
+def init_root_context(root_id: str) -> NotionRootContext:
+    """Detect whether root_id is a page or database, cache the result, return context.
+
+    On subsequent runs the type is read from sync_state.json to avoid extra
+    API calls.  Re-detects automatically when root_id changes.
+    """
+    global _root_context
+
+    # Use cached type if root hasn't changed since last run.
+    cached_type = state.get_root_type()
+    cached_root = state.get_notion_root_page_id()
+    if cached_type and cached_root and cached_root.replace("-", "") == root_id.replace("-", ""):
+        _root_context = NotionRootContext(root_id, cached_type)
+        return _root_context
+
+    # Auto-detect: try page endpoint first, fall back to database.
+    resp = session.get(f"https://api.notion.com/v1/pages/{root_id}", headers=HEADERS, timeout=REQUEST_TIMEOUT)
+    if resp.status_code == 200:
+        root_type = "page"
+    else:
+        resp2 = session.get(f"https://api.notion.com/v1/databases/{root_id}", headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        if resp2.status_code == 200:
+            root_type = "database"
+        else:
+            print(f"{YELLOW}Could not confirm root type for {root_id}; defaulting to 'page'.{RESET}")
+            root_type = "page"
+
+    print(f"{GREEN}Root type detected: {root_type}{RESET}")
+    state.set_root_type(root_type)
+    state.save()
+    _root_context = NotionRootContext(root_id, root_type)
+    return _root_context
+
+
+# ---------------------------------------------------------------------------
 # Block-level diff helpers
 # ---------------------------------------------------------------------------
 
@@ -360,7 +533,11 @@ def reconcile_state(local_md_files):
         return
 
     print(f"{YELLOW}No local state found. Discovering existing Notion pages (one-time)...{RESET}")
-    notion_pages = get_all_notion_pages(state.get_notion_root_page_id())
+    notion_pages = (
+        _root_context.discover_pages()
+        if _root_context
+        else get_all_notion_pages(state.get_notion_root_page_id())
+    )
 
     local_relative = {os.path.relpath(f, BASE_DIR) for f in local_md_files}
 
@@ -453,17 +630,24 @@ def delete_existing_content(page_id):
 
 def create_or_update_notion_page(title, parent_id, blocks, is_folder=False):
     """Create a new Notion page or update an existing one if found."""
-    existing_page_id = search_existing_page(title, parent_id)
+    ctx = _root_context
+    existing_page_id = (
+        ctx.search_direct_child(title, parent_id)
+        if ctx
+        else search_existing_page(title, parent_id)
+    )
 
     if existing_page_id:
         # Folder pages carry no content — nothing to update if the page already exists.
         return existing_page_id
 
+    parent = ctx.parent_dict(parent_id) if ctx else {"page_id": parent_id}
     payload = {
-        "parent": {"page_id": parent_id},
+        "parent": parent,
         "properties": {"title": {"title": [{"text": {"content": title}}]}},
     }
-    if is_folder:
+    # Only add the folder emoji for page-tree folders, not for database rows.
+    if is_folder and "page_id" in parent:
         payload["icon"] = {"emoji": "🗂️"}
 
     print(f"{GREEN}Creating new Notion page: {title}{RESET}")
@@ -508,7 +692,12 @@ def get_or_create_folder_page(folder_path, dry_run: bool = False):
             if dry_run:
                 print(f"{YELLOW}  [dry] Would create folder: {accumulated}{RESET}")
                 continue
-            folder_id = search_existing_page(folder, parent_id)
+            ctx = _root_context
+            folder_id = (
+                ctx.search_direct_child(folder, parent_id)
+                if ctx
+                else search_existing_page(folder, parent_id)
+            )
             if not folder_id:
                 folder_id = create_or_update_notion_page(folder, parent_id, [], is_folder=True)
             if folder_id:
@@ -692,10 +881,11 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
             return ("created", None)
 
         print(f"{GREEN}Creating new Notion page: {page_title}{RESET}")
+        ctx = _root_context
         response = session.post(
             "https://api.notion.com/v1/pages",
             json={
-                "parent": {"page_id": parent_id},
+                "parent": ctx.parent_dict(parent_id) if ctx else {"page_id": parent_id},
                 "properties": {"title": {"title": [{"text": {"content": page_title}}]}},
             },
             headers=HEADERS,
