@@ -78,6 +78,17 @@ cp sync_state.json.example <docs_dir>/sync_state.json
 # then edit sync_state.json and replace "your-root-page-id-here"
 ```
 
+### 3. Developer / safety settings (`config.py`)
+
+`config.py` contains a small set of constants you can adjust without touching the core logic:
+
+| Setting | Default | Description |
+|---|---|---|
+| `WRITES_DISABLED` | `False` | **Kill switch.** When `True`, every write operation (create, update, delete, archive, image upload) is silently skipped, regardless of `--dry-run`. Useful when developing or testing the tool against a live Notion workspace — flip to `False` only when you're ready for real changes. Unlike `--dry-run`, this affects all code paths uniformly and requires no CLI flag. |
+| `REQUEST_TIMEOUT` | `30` | HTTP timeout in seconds for all Notion API calls (connect + read). |
+| `BLOCK_LIMIT` | `100` | Maximum number of blocks sent in a single `PATCH /blocks/{id}/children` request (Notion's API limit). |
+| `MAX_BLOCK_TEXT_LENGTH` | `2000` | Maximum characters in a single rich-text run before it is split. |
+
 ## Usage
 
 The tool has two subcommands:
@@ -157,6 +168,17 @@ For pages with existing content, the tool:
 If new content must be inserted before the very first block (Notion has no `before` parameter), the tool falls back to deleting all blocks and re-uploading the full page.
 
 Brand-new pages (just created in Phase 1) skip the fetch and diff entirely — content is uploaded directly.
+
+### Child page handling
+
+Notion pages can have **child pages** (sub-pages) that always appear as `child_page` blocks at the bottom of the parent page. The tool treats these as Notion-owned structural elements and never touches them:
+
+- **Pull**: `child_page` blocks are **not** converted to inline markdown links. Child pages are downloaded as separate `.md` files; no redundant links are emitted in the parent file.
+- **Sync**: `child_page` blocks are **excluded from the diff** on both sides — they are invisible to the diff engine and are never deleted, replaced, or re-inserted as paragraph blocks.
+
+### External archive / delete recovery
+
+If a Notion page is archived or deleted directly in Notion (outside of this tool), the tool detects the missing page on the next sync, drops the stale entry from `sync_state.json`, and re-creates the page from scratch. No manual state cleanup is required.
 
 ### Image upload
 
@@ -404,15 +426,31 @@ notion-sync/
 ├── markdown_parser.py         # Markdown → Notion block conversion (sync direction)
 ├── sync_state.py              # Local state management (sync_state.json)
 ├── image_uploader.py          # Image upload via Notion file upload API
-├── config.py                  # Constants and environment variable loading
+├── config.py                  # Constants, environment variable loading, kill switch
 ├── utils.py                   # File discovery helpers
+├── strip_notion_ids.py        # One-off utility: strips Notion UUID suffixes from exported files
 ├── requirements.txt           # Python dependencies
 ├── .env.example               # Environment variable template
 └── sync_state.json.example    # State file template (copy into <docs_dir>)
 ```
 
+### `strip_notion_ids.py` — clean up Notion exports
+
+When you export pages from the Notion UI, filenames and folder names contain a 32-character UUID suffix (e.g. `Fraud Score System 3139c23278f580b1bfe0d97b2eb12a60.md`). This one-off utility strips those suffixes, renames the files and folders, rewrites all internal cross-page links, and updates `sync_state.json` so the sync tool keeps its mappings intact.
+
+```sh
+# Preview renames without touching the filesystem
+python strip_notion_ids.py <docs_dir> --dry-run
+
+# Apply
+python strip_notion_ids.py <docs_dir>
+```
+
+Run this **once** after a Notion export, before the first `sync`. It is not needed when using the `pull` command, which never adds UUID suffixes.
+
 ## Notes
 
 - Ensure your Notion integration has **edit access** to the root page (**Share → Connect to**).
 - `sync_state.json` is auto-generated inside `<docs_dir>` and never lives in the project folder. If `<docs_dir>` is version-controlled, commit `sync_state.json` — it tracks the mapping between local files and Notion page IDs and should be shared across machines.
-- If you change the markdown-to-Notion rendering logic, clear the content hashes in `sync_state.json` to force a full re-upload (set all `content_hash` values to `null` or delete the file).
+- **Forcing a full re-sync:** if you change the markdown-to-Notion rendering logic or suspect Notion's content is out of sync with the local files, clear the content hashes to force a re-upload: set all `content_hash` values in `sync_state.json` to `null`, or delete the file entirely (page ID mappings will be re-discovered automatically on the next run).
+- **Kill switch during development:** set `WRITES_DISABLED = True` in `config.py` to block all Notion writes globally. Unlike `--dry-run` this requires no CLI flag and guards against accidental writes even when calling internal APIs directly. Remember to set it back to `False` before a real sync run.
