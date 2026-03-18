@@ -5,7 +5,7 @@ import requests
 from difflib import SequenceMatcher
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
-from config import HEADERS, BLOCK_LIMIT, BASE_DIR, ROOT_IS_FILE, RED, YELLOW, GREEN, RESET
+from config import HEADERS, BLOCK_LIMIT, BASE_DIR, ROOT_IS_FILE, WRITES_DISABLED, RED, YELLOW, GREEN, RESET
 from markdown_parser import md_to_notion_blocks
 from sync_state import state
 
@@ -246,6 +246,10 @@ def init_root_context(root_id: str) -> NotionRootContext:
         cached_accepts = state.get_root_accepts_blocks()
         if cached_accepts is not None:
             root_accepts_blocks = cached_accepts
+        elif WRITES_DISABLED:
+            # Can't probe without writing — assume blocks are supported.
+            # Will be probed and cached on the first real (non-disabled) run.
+            pass
         else:
             probe = session.patch(
                 f"https://api.notion.com/v1/blocks/{root_id}/children",
@@ -296,6 +300,10 @@ def _block_fingerprint(block: dict) -> str:
         if from_cache is False:
             # Freshly uploaded — use the upload ID so it won't match the old block.
             upload_id = block.get("image", {}).get("file_upload", {}).get("id", "")
+            # In dry-run mode images are not uploaded; the placeholder ID must not
+            # cause a spurious replacement, so treat it the same as a cache hit.
+            if upload_id == "dry-run-placeholder":
+                return "image:cached"
             return f"image:new:{upload_id}"
         # Cached upload OR existing Notion block (no tag) → treat as unchanged.
         return "image:cached"
@@ -320,6 +328,13 @@ def _block_fingerprint(block: dict) -> str:
         digest = hashlib.md5("|".join(parts).encode()).hexdigest()[:8]
         return f"table:{digest}"
 
+    # child_page blocks store their title differently — no rich_text array.
+    if btype == "child_page":
+        title = block.get("child_page", {}).get("title", "")
+        # Fingerprint as a paragraph so it matches the link-paragraph that the
+        # pull generates for child pages (e.g. "[Title](path.md)").
+        return f"paragraph:{title}"
+
     block_data = block.get(btype, {})
     rich_text = block_data.get("rich_text", [])
     text = "".join(rt.get("text", {}).get("content", "") for rt in rich_text)
@@ -338,6 +353,8 @@ def _strip_block_metadata(blocks: list) -> list:
 
 def _delete_block(block_id: str):
     """Delete a single Notion block by ID."""
+    if WRITES_DISABLED:
+        return
     resp = session.delete(f"https://api.notion.com/v1/blocks/{block_id}", headers=HEADERS, timeout=REQUEST_TIMEOUT)
     if resp.status_code != 200:
         print(f"{RED}Failed to delete block {block_id}: {resp.status_code} - {resp.text}{RESET}")
@@ -352,6 +369,8 @@ def _insert_blocks_after(page_id: str, blocks: list, after_id: str | None) -> bo
     to satisfy Notion's API limit. Each subsequent chunk is inserted after the last
     block of the previous chunk.
     """
+    if WRITES_DISABLED:
+        return True
     current_after_id = after_id
 
     for i in range(0, len(blocks), NOTION_BLOCK_LIMIT):
@@ -511,7 +530,7 @@ def search_existing_page(title, parent_id):
     return None  # No existing page found
 
 def get_existing_page_content(page_id):
-    """Fetch the current content of a Notion page.
+    """Fetch the current content of a Notion page (all blocks, paginated).
 
     Also fetches table row children for any table blocks encountered, so that
     _block_fingerprint can compute content-aware hashes for tables.
@@ -520,16 +539,28 @@ def get_existing_page_content(page_id):
     (404) or is archived — callers should treat None as "page needs recreating".
     """
     url = f"https://api.notion.com/v1/blocks/{page_id}/children"
-    response = session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+    all_blocks: list = []
+    next_cursor: str | None = None
 
-    if response.status_code != 200:
-        print(f"{RED}Error fetching page content: {response.status_code}, {response.text}{RESET}")
-        return None
+    while True:
+        params: dict = {"page_size": 100}
+        if next_cursor:
+            params["start_cursor"] = next_cursor
+        response = session.get(url, headers=HEADERS, params=params, timeout=REQUEST_TIMEOUT)
 
-    blocks = response.json().get("results", [])
+        if response.status_code != 200:
+            print(f"{RED}Error fetching page content: {response.status_code}, {response.text}{RESET}")
+            # Return whatever we managed to collect before the error, or None if nothing.
+            return all_blocks if all_blocks else None
+
+        data = response.json()
+        all_blocks.extend(data.get("results", []))
+        next_cursor = data.get("next_cursor")
+        if not next_cursor:
+            break
 
     # Enrich table blocks with their row children so fingerprinting is content-aware.
-    for block in blocks:
+    for block in all_blocks:
         if block.get("type") == "table":
             rows_resp = session.get(
                 f"https://api.notion.com/v1/blocks/{block['id']}/children",
@@ -539,10 +570,12 @@ def get_existing_page_content(page_id):
             if rows_resp.status_code == 200:
                 block.setdefault("table", {})["children"] = rows_resp.json().get("results", [])
 
-    return blocks
+    return all_blocks
 
 def archive_page_in_notion(page_id):
     """Archives a Notion page instead of deleting it."""
+    if WRITES_DISABLED:
+        return "deleted"
 
     url = f"https://api.notion.com/v1/pages/{page_id}"
     data = {"archived": True}
@@ -630,6 +663,8 @@ def delete_notion_page_if_missing(local_md_files, dry_run: bool = False):
 
 def delete_existing_content(page_id):
     """Delete all content blocks from an existing Notion page before updating."""
+    if WRITES_DISABLED:
+        return
     url = f"https://api.notion.com/v1/blocks/{page_id}/children"
     params = {"page_size": 100}
 
@@ -662,6 +697,8 @@ def delete_existing_content(page_id):
 
 def create_or_update_notion_page(title, parent_id, blocks, is_folder=False):
     """Create a new Notion page or update an existing one if found."""
+    if WRITES_DISABLED:
+        return None
     ctx = _root_context
     existing_page_id = (
         ctx.search_direct_child(title, parent_id)
@@ -740,6 +777,8 @@ def get_or_create_folder_page(folder_path, dry_run: bool = False):
 
 def upload_blocks_to_notion(page_id, blocks):
     """Upload content blocks to Notion in chunks, ensuring no empty pages."""
+    if WRITES_DISABLED:
+        return "updated"
     if not blocks:
         print(f"Skipping empty block upload for page (ID: {page_id})")
         return

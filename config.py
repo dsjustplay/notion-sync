@@ -21,6 +21,11 @@ BASE_DIR = "docs"
 # the target Notion page itself (set via --root-is-file on the sync command).
 ROOT_IS_FILE = False
 
+# Safety kill-switch: when True, ALL write operations to Notion (create, delete,
+# archive, upload) are silently skipped regardless of --dry-run.
+# Flip to False only when you are ready to let the tool make real changes.
+WRITES_DISABLED = True
+
 # Notion API constraints
 BLOCK_LIMIT = 100
 MAX_BLOCK_TEXT_LENGTH = 2000
