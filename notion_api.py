@@ -237,9 +237,35 @@ def init_root_context(root_id: str) -> NotionRootContext:
     state.set_root_type(root_type)
     state.save()
 
-    # Notion does not allow appending content blocks to a database object via the API.
-    # A database root therefore cannot accept the root .md file's content.
-    root_accepts_blocks = root_type != "database"
+    # For database roots, probe whether the page layer accepts content blocks by
+    # attempting a real PATCH write.  Some databases (e.g. full-page databases created
+    # before Notion changed their structure) accept blocks; plain standalone databases
+    # return 400.  Result is cached in sync_state so the probe only runs once.
+    root_accepts_blocks = True
+    if root_type == "database":
+        cached_accepts = state.get_root_accepts_blocks()
+        if cached_accepts is not None:
+            root_accepts_blocks = cached_accepts
+        else:
+            probe = session.patch(
+                f"https://api.notion.com/v1/blocks/{root_id}/children",
+                headers=HEADERS,
+                json={"children": [{"object": "block", "type": "paragraph", "paragraph": {"rich_text": []}}]},
+                timeout=REQUEST_TIMEOUT,
+            )
+            if probe.status_code == 400 and "does not support children" in probe.text:
+                root_accepts_blocks = False
+            elif probe.status_code == 200:
+                root_accepts_blocks = True
+                probe_results = probe.json().get("results", [])
+                if probe_results:
+                    session.delete(
+                        f"https://api.notion.com/v1/blocks/{probe_results[0]['id']}",
+                        headers=HEADERS,
+                        timeout=REQUEST_TIMEOUT,
+                    )
+            state.set_root_accepts_blocks(root_accepts_blocks)
+            state.save()
 
     _root_context = NotionRootContext(root_id, root_type, root_accepts_blocks)
     return _root_context

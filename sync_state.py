@@ -14,7 +14,7 @@ class SyncState:
     """Persistent local state mapping local paths to Notion IDs and image upload cache."""
 
     def __init__(self):
-        self._data = {"pages": {}, "folders": {}, "images": {}, "notion_root_page_id": None, "root_type": None}
+        self._data = {"pages": {}, "folders": {}, "images": {}, "notion_root_page_id": None, "root_type": None, "root_accepts_blocks": None}
 
     def load(self):
         """Load state from disk. Safe to call even if the file does not exist yet."""
@@ -24,6 +24,7 @@ class SyncState:
                 self._data = json.load(f)
             self._data.setdefault("notion_root_page_id", None)
             self._data.setdefault("root_type", None)
+            self._data.setdefault("root_accepts_blocks", None)
         return self
 
     def save(self):
@@ -76,6 +77,12 @@ class SyncState:
 
     def set_root_type(self, root_type: str):
         self._data["root_type"] = root_type
+
+    def get_root_accepts_blocks(self) -> bool | None:
+        return self._data.get("root_accepts_blocks")
+
+    def set_root_accepts_blocks(self, value: bool):
+        self._data["root_accepts_blocks"] = value
 
     # ------------------------------------------------------------------
     # Folders  (key: full relative folder path, e.g. "guides/api")
