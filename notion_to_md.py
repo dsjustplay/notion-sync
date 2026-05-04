@@ -121,10 +121,12 @@ def download_image(url: str, dest_dir: str, hint: str = "image") -> str | None:
     os.makedirs(assets_dir, exist_ok=True)
 
     # Prefer the original filename embedded in the URL (present in Notion S3 URLs).
-    # URL-decode so the saved file and the markdown reference both use plain text names
-    # (e.g. "white_Fraud_Overview_(1).png" not "white_Fraud_Overview_%281%29.png").
+    # URL-decode so the saved file and the markdown reference both use plain text names.
+    # Strip parentheses so "white_Fraud_Overview_(1).png" becomes "white_Fraud_Overview_1.png"
+    # — parentheses are awkward to type and unnecessary in local filenames.
     url_path = url.split("?")[0]
     url_basename = _sanitise_filename(urllib.parse.unquote(os.path.basename(url_path)))
+    url_basename = url_basename.replace("(", "").replace(")", "")
     ext = os.path.splitext(urllib.parse.unquote(url_path))[1] or ".png"
     base_filename = url_basename if url_basename else (_sanitise_filename(hint) + ext)
     stem, suffix = os.path.splitext(base_filename)
