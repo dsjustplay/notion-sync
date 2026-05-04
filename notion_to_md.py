@@ -109,7 +109,14 @@ def _sanitise_filename(name: str) -> str:
 
 
 def download_image(url: str, dest_dir: str, hint: str = "image") -> str | None:
-    """Download an image from url into dest_dir/assets/. Returns relative path or None."""
+    """Download an image from url into dest_dir/assets/. Returns relative path or None.
+
+    Content-aware deduplication: if a file with the same bytes already exists in
+    the assets folder (identified by SHA-256), that file is reused and nothing is
+    written to disk. This prevents _2, _3, … duplicates accumulating across pulls.
+    If two genuinely different images share the same base filename, the second one
+    still gets a _2 suffix as before.
+    """
     assets_dir = os.path.join(dest_dir, "assets")
     os.makedirs(assets_dir, exist_ok=True)
 
@@ -120,29 +127,45 @@ def download_image(url: str, dest_dir: str, hint: str = "image") -> str | None:
     url_basename = _sanitise_filename(urllib.parse.unquote(os.path.basename(url_path)))
     ext = os.path.splitext(urllib.parse.unquote(url_path))[1] or ".png"
     base_filename = url_basename if url_basename else (_sanitise_filename(hint) + ext)
-
-    # Avoid overwriting an existing file with the same name (e.g. multiple
-    # Notion screenshots all called "image.png"). Append _2, _3, … as needed.
-    filename = base_filename
     stem, suffix = os.path.splitext(base_filename)
+
+    try:
+        resp = requests.get(url, timeout=30)
+        if resp.status_code != 200:
+            print(f"{YELLOW}Failed to download image ({resp.status_code}): {url}{RESET}")
+            return None
+    except Exception as e:
+        print(f"{YELLOW}Exception downloading image: {e}{RESET}")
+        return None
+
+    data = resp.content
+    incoming_hash = hashlib.sha256(data).hexdigest()
+
+    # Content-addressed deduplication: scan every existing file in assets.
+    # If any file has identical bytes, reuse it regardless of its name.
+    # This handles cases where the URL-embedded filename differs from the
+    # locally cleaned-up name (e.g. Notion stored "image_2_2.png" but we
+    # renamed it to "image.png" after a previous pull cleanup).
+    # Sort so shorter (cleaner) names are preferred when multiple files share
+    # the same content (e.g. "image.png" beats "image_2_2.png").
+    for existing in sorted(os.listdir(assets_dir), key=lambda n: (len(n), n)):
+        if not existing.lower().endswith(suffix.lower()):
+            continue
+        existing_path = os.path.join(assets_dir, existing)
+        with open(existing_path, "rb") as f:
+            if hashlib.sha256(f.read()).hexdigest() == incoming_hash:
+                return os.path.join("assets", existing)
+
+    # No content match — pick the next available name and write.
+    filename = base_filename
     counter = 2
     while os.path.exists(os.path.join(assets_dir, filename)):
         filename = f"{stem}_{counter}{suffix}"
         counter += 1
 
-    dest_path = os.path.join(assets_dir, filename)
-
-    try:
-        resp = requests.get(url, timeout=30)
-        if resp.status_code == 200:
-            with open(dest_path, "wb") as f:
-                f.write(resp.content)
-            return os.path.join("assets", filename)
-        else:
-            print(f"{YELLOW}Failed to download image ({resp.status_code}): {url}{RESET}")
-    except Exception as e:
-        print(f"{YELLOW}Exception downloading image: {e}{RESET}")
-    return None
+    with open(os.path.join(assets_dir, filename), "wb") as f:
+        f.write(data)
+    return os.path.join("assets", filename)
 
 
 
