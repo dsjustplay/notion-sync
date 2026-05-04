@@ -11,7 +11,7 @@ import urllib.parse
 import requests
 
 from config import HEADERS, RED, YELLOW, GREEN, RESET
-from notion_api import session, REQUEST_TIMEOUT
+from notion_api import session, REQUEST_TIMEOUT, _compute_notion_blocks_hash
 from sync_state import state
 
 # ---------------------------------------------------------------------------
@@ -345,6 +345,10 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str):
     state_key = os.path.relpath(filepath, base_dir)
     state.set_page_id(state_key, page_id)
     state.set_page_hash(state_key, content_hash)
+    # Seed the Notion-side fingerprint from the blocks just fetched.
+    # This establishes the baseline for remote drift detection: the next sync
+    # of this file can detect if Notion was edited between the pull and the push.
+    state.set_notion_hash(state_key, _compute_notion_blocks_hash(blocks))
 
     print(f"{GREEN}Downloaded: {os.path.relpath(filepath, base_dir)}{RESET}")
 

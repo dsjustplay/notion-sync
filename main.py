@@ -42,6 +42,15 @@ def _parse_args():
             "of the same name (e.g. 'Fraud Control.md' + 'Fraud Control/')."
         ),
     )
+    sync_parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Overwrite Notion even when remote drift is detected (i.e. the Notion page was "
+            "edited directly since the last sync). Without this flag, affected pages are "
+            "skipped with a warning so no manual edits are silently lost."
+        ),
+    )
 
     # -- pull subcommand (download Notion → local) ----------------------------
     pull_parser = subparsers.add_parser(
@@ -88,6 +97,7 @@ def sync_markdown_to_notion():
     # Start the timer to measure execution time.
     start_time = time.time()
     dry_run = _args.dry_run
+    force = _args.force
 
     if dry_run:
         print(f"{YELLOW}DRY RUN — no changes will be made to Notion.{RESET}\n")
@@ -142,7 +152,9 @@ def sync_markdown_to_notion():
     updated_pages = 0
     skipped_pages = 0
     failed_uploads = 0
+    drift_pages = 0
     failed_files = []
+    drift_files = []
     dry_run_new = set()  # Track new pages so Phase 2 doesn't report them again.
 
     for md_file in md_files:
@@ -188,7 +200,7 @@ def sync_markdown_to_notion():
         updated_content = replace_md_links(md_content, md_to_notion)
         result = upload_markdown_file_to_notion(md_file, update_content=True,
                                                 new_content=updated_content, dry_run=dry_run,
-                                                raw_content=md_content)
+                                                raw_content=md_content, force=force)
         if isinstance(result, tuple):
             status, _ = result
         else:
@@ -201,13 +213,16 @@ def sync_markdown_to_notion():
         elif status == "failed":
             failed_uploads += 1
             failed_files.append(md_file)
+        elif status == "drift":
+            drift_pages += 1
+            drift_files.append(md_file)
 
     # Calculate the total execution time.
     end_time = time.time()
     elapsed_time = end_time - start_time
 
-    # Recalculate skipped count.
-    skipped_pages = total_files - (new_pages + updated_pages + failed_uploads)
+    # Recalculate skipped count (drift pages count as skipped from the file total perspective).
+    skipped_pages = total_files - (new_pages + updated_pages + failed_uploads + drift_pages)
 
     # Display the final sync summary.
     prefix = "[dry] Would " if dry_run else ""
@@ -223,6 +238,14 @@ def sync_markdown_to_notion():
     if deleted_pages > 0:
         print(f"{YELLOW}{prefix}Archive: {deleted_pages}{RESET}")
 
+    # Report remote drift (Notion edited directly since last sync).
+    if drift_pages > 0:
+        print(f"{RED}Drift detected (skipped): {drift_pages}{RESET}")
+        print("The following pages were edited directly in Notion and were NOT overwritten:")
+        for file in drift_files:
+            print(f"{RED} - {os.path.basename(file)}{RESET}")
+        print(f"Pull first to merge, or re-run with --force to overwrite Notion.")
+
     # Report any failed uploads.
     if failed_uploads > 0:
         print(f"{RED}Failed: {failed_uploads}/{total_files}{RESET}")
@@ -231,7 +254,7 @@ def sync_markdown_to_notion():
             print(f"{RED} - {str(file)}{RESET}")
 
     # Success message when all files have synced without failures.
-    if (new_pages > 0 or updated_pages > 0 or deleted_pages > 0 or skipped_pages > 0) and failed_uploads == 0:
+    if (new_pages > 0 or updated_pages > 0 or deleted_pages > 0 or skipped_pages > 0) and failed_uploads == 0 and drift_pages == 0:
         msg = "Dry run complete — no changes made to Notion." if dry_run else "All files synced successfully!"
         print(f"{GREEN}{msg}{RESET}")
 
