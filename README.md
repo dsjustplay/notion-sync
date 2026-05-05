@@ -97,7 +97,7 @@ The tool has two subcommands:
 
 ```sh
 python main.py sync <docs_dir> [--root-page-id PAGE_ID] [--apply] [--root-is-file] [--force]
-python main.py pull <target_dir> [--root-page-id PAGE_ID] [--apply]
+python main.py pull <target_dir> [--root-page-id PAGE_ID] [--apply] [--diff]
 ```
 
 > **Both commands default to dry-run mode.** Pass `--apply` to actually write changes (to Notion for `sync`, to disk for `pull`).
@@ -133,6 +133,7 @@ python main.py sync <docs_dir> --root-page-id YOUR_PAGE_ID --root-is-file --appl
 | `target_dir` | Always | Local directory to write downloaded Markdown files into |
 | `--root-page-id` | First run only | Notion page or database ID to pull from; stored in `sync_state.json` for subsequent runs |
 | `--apply` | Optional | Actually write downloaded files to disk. Without this flag the command is a dry run — nothing is written. |
+| `--diff` | Optional | In dry-run mode, print a git-style unified diff for every page that would be updated. Ignored in apply mode. |
 
 ```sh
 # First run — provide the root page ID once
@@ -143,6 +144,9 @@ python main.py pull <target_dir> --apply
 
 # Preview what would be downloaded (dry run — default, nothing written)
 python main.py pull <target_dir>
+
+# Preview with line-level diffs for changed pages
+python main.py pull <target_dir> --diff
 ```
 
 The pull command auto-detects whether the root ID is a **regular page** or a **database**:
@@ -169,6 +173,17 @@ Each file is re-read, its internal `.md` links are rewritten to Notion URLs (usi
 A SHA-256 of the full markdown text is stored in `sync_state.json` for each file. On subsequent runs:
 - Hash **unchanged** → file is skipped, no Notion API call.
 - Hash **changed or absent** → content is uploaded.
+
+### Drift detection
+
+After every successful push the tool fetches the page's updated `last_edited_time` from Notion and stores it in `sync_state.json`. Before Phase 2 of each sync run, every file whose local content has changed is checked against Notion's current `last_edited_time`:
+
+- **Timestamps match** → Notion has not been touched since the last sync. Safe to push.
+- **Timestamps differ** → someone edited the page in Notion since the last pull. The tool prints a warning listing the affected files and the stored vs live timestamps.
+
+In **dry-run** mode the check is a warning only — the rest of the output continues normally so you can see the full picture. In **apply** mode the tool aborts before writing anything and suggests a `pull` first (or `--force` to override).
+
+`pull` and `pull --apply` both use the stored `last_edited_time` as a fast-path: if the timestamp matches, the page's blocks are not fetched at all and the page is printed as `Unchanged` immediately.
 
 ### Block-level diffing
 
@@ -402,9 +417,22 @@ python main.py pull <target_dir> --root-page-id YOUR_PAGE_ID --apply
 ```
 Pulling from Notion YOUR_PAGE_ID into <target_dir> ...
 Root page: Fraud Control
-Downloaded: Fraud Control.md
-Downloaded: Fraud Control/Fraud Score System.md
-Downloaded: Fraud Control/User verification.md
+Created:   Fraud Control.md
+Created:   Fraud Control/Fraud Score System.md
+Created:   Fraud Control/User verification.md
+...
+
+Pull complete — 21 page(s) downloaded to <target_dir>
+```
+
+On subsequent pulls, pages whose Notion `last_edited_time` hasn't changed are printed as `Unchanged` without fetching their blocks:
+
+```
+Pulling from Notion YOUR_PAGE_ID into <target_dir> ...
+Root page: Fraud Control
+Unchanged: Fraud Control.md
+Unchanged: Fraud Control/Fraud Score System.md
+Updated:   Fraud Control/User verification.md
 ...
 
 Pull complete — 21 page(s) downloaded to <target_dir>
@@ -418,10 +446,10 @@ python main.py pull <target_dir> --root-page-id bb865e41690d4489b3e928aefa49cace
 ```
 Pulling from Notion bb865e41690d4489b3e928aefa49cace into <target_dir> ...
 Database: Fraud Control
-Downloaded: Fraud Control.md
-Downloaded: Fraud Control/Earnings reductions.md
-Downloaded: Fraud Control/User verification.md
-Downloaded: Fraud Control/User verification/Face check (facetec).md
+Created:   Fraud Control.md
+Created:   Fraud Control/Earnings reductions.md
+Created:   Fraud Control/User verification.md
+Created:   Fraud Control/User verification/Face check (facetec).md
 ...
 
 Pull complete — 28 page(s) downloaded to <target_dir>

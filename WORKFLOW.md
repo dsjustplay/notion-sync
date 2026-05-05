@@ -79,21 +79,38 @@ git commit -m "sync: update Notion state"
 
 ## Drift detection
 
-The tool stores a fingerprint of Notion's content after each sync. Before overwriting a page, it fetches the current Notion blocks and compares them to the stored fingerprint:
+After every successful push, the tool fetches the page's new `last_edited_time` from Notion and stores it in `sync_state.json`. Before Phase 2 of a sync run, every file whose local content has changed is checked: the stored timestamp is compared to Notion's current `last_edited_time`.
 
 - **Match** — Notion has not been touched since the last sync. Safe to proceed.
-- **Mismatch** — someone edited the page directly in Notion. The page is **skipped** and a warning is printed.
+- **Mismatch** — someone edited the page directly in Notion since the last pull.
+
+**Dry-run** (`sync` without `--apply`): the check runs and prints a warning for each drifted page, but the rest of the dry-run output continues so you can see the full picture:
 
 ```
-Remote drift detected on 'User verification.md': Notion was edited directly since last sync.
-Run with --force to overwrite Notion, or pull first to merge the changes.
+Warning: the following page(s) were edited in Notion since your last pull:
+  Fraud Control/User verification.md
+    last known: 2026-05-01T10:00:00.000Z
+    notion now: 2026-05-04T08:26:00.000Z
+Run 'pull' to get the latest changes before syncing. Use --force to overwrite Notion anyway.
 ```
+
+**Apply** (`sync --apply`): if any drift is detected, the tool **aborts before writing anything** and lists the affected files:
+
+```
+Aborting: the following page(s) were edited in Notion since your last pull:
+  Fraud Control/User verification.md
+    last known: 2026-05-01T10:00:00.000Z
+    notion now: 2026-05-04T08:26:00.000Z
+Run 'pull' to get the latest changes before syncing. Use --force to overwrite Notion anyway.
+```
+
+No pages are written. Resolve before retrying:
 
 **Resolution options:**
 
 | Option | When to use |
 |---|---|
-| `pull` first, review changes, then sync | The Notion edit contains useful content you want to keep |
+| `pull --apply` first, review, then sync | The Notion edit contains useful content you want to keep |
 | Re-run with `--force` | The Notion edit is stale or intentionally being replaced by the local version |
 
 ```sh
@@ -101,7 +118,7 @@ Run with --force to overwrite Notion, or pull first to merge the changes.
 python main.py sync <docs_dir> --apply --force
 ```
 
-Pull also reseeds the drift baseline, so after a pull the next sync starts clean regardless of what was in Notion before.
+`pull` reseeds the drift baseline — after a pull the next sync starts clean regardless of what was in Notion before.
 
 ---
 
@@ -127,10 +144,15 @@ python main.py pull <docs_dir> --apply
 # Preview what would be downloaded (dry run — default, nothing written)
 python main.py pull <docs_dir>
 
+# Preview with line-level diffs for changed pages
+python main.py pull <docs_dir> --diff
+
 # Preview what would be synced (dry run — default, no Notion changes)
+# Also runs the drift pre-flight check and warns about any Notion-side edits.
 python main.py sync <docs_dir> [--root-is-file]
 
 # Everyday sync (CI or pre-merge) — actually push to Notion
+# Aborts before any write if drift is detected; see Drift detection above.
 python main.py sync <docs_dir> --apply [--root-is-file]
 
 # Overwrite Notion even if drift is detected
