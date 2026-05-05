@@ -27,9 +27,9 @@ def _parse_args():
         help="Notion page ID to sync under. Required on the first run; stored in sync_state.json afterwards.",
     )
     sync_parser.add_argument(
-        "--dry-run",
+        "--apply",
         action="store_true",
-        help="Preview what would be created, updated, or deleted without making any changes to Notion.",
+        help="Actually write changes to Notion. Without this flag the command runs as a dry run and only prints what would change.",
     )
     sync_parser.add_argument(
         "--root-is-file",
@@ -67,6 +67,11 @@ def _parse_args():
         required=True,
         help="Notion page ID to pull from.",
     )
+    pull_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Actually write downloaded files to disk. Without this flag the command runs as a dry run and only prints what would be downloaded.",
+    )
 
     return parser.parse_args()
 
@@ -96,7 +101,7 @@ def sync_markdown_to_notion():
 
     # Start the timer to measure execution time.
     start_time = time.time()
-    dry_run = _args.dry_run
+    dry_run = not _args.apply
     force = _args.force
 
     if dry_run:
@@ -116,7 +121,7 @@ def sync_markdown_to_notion():
         return
 
     # Detect whether the root is a page tree or a Notion database (cached after first run).
-    root_ctx = init_root_context(state.get_notion_root_page_id())
+    root_ctx = init_root_context(state.get_notion_root_page_id(), dry_run=dry_run)
 
     # A standalone database (one that doesn't support block children) cannot receive
     # the root .md file content. Fail early with a clear explanation.
@@ -268,6 +273,6 @@ if __name__ == "__main__":
         if _args.command == "sync":
             sync_markdown_to_notion()
         elif _args.command == "pull":
-            pull_from_notion(config.BASE_DIR, _args.root_page_id)
+            pull_from_notion(config.BASE_DIR, _args.root_page_id, dry_run=not _args.apply)
     except KeyboardInterrupt:
         print(f"\n{RED}Aborted{RESET}")

@@ -13,7 +13,7 @@ Syncs Markdown (`.md`) files from a local directory to Notion, creating and upda
 - Incremental sync — skips unchanged files using SHA-256 content hashes
 - Block-level diffing — only changed blocks are updated, preserving comments and reactions
 - Auto-archives Notion pages when the corresponding local file is deleted
-- Dry-run mode — preview changes without writing to Notion
+- Safe by default — every run is a dry run unless `--apply` is passed; no accidental writes
 - `--root-is-file` — writes a root `.md` file's content directly to the target page, avoiding an extra nesting level
 
 **Pull (Notion → local)**
@@ -22,6 +22,7 @@ Syncs Markdown (`.md`) files from a local directory to Notion, creating and upda
 - Preserves folder hierarchy matching the Notion page tree
 - Downloads and saves embedded images locally under `assets/` subfolders
 - Writes a `sync_state.json` ready for subsequent `sync` runs
+- Safe by default — dry run unless `--apply` is passed
 
 ## Requirements
 
@@ -86,7 +87,6 @@ cp sync_state.json.example <docs_dir>/sync_state.json
 
 | Setting | Default | Description |
 |---|---|---|
-| `WRITES_DISABLED` | `False` | **Kill switch.** When `True`, every write operation (create, update, delete, archive, image upload) is silently skipped, regardless of `--dry-run`. Useful when developing or testing the tool against a live Notion workspace — flip to `False` only when you're ready for real changes. Unlike `--dry-run`, this affects all code paths uniformly and requires no CLI flag. |
 | `REQUEST_TIMEOUT` | `30` | HTTP timeout in seconds for all Notion API calls (connect + read). |
 | `BLOCK_LIMIT` | `100` | Maximum number of blocks sent in a single `PATCH /blocks/{id}/children` request (Notion's API limit). |
 | `MAX_BLOCK_TEXT_LENGTH` | `2000` | Maximum characters in a single rich-text run before it is split. |
@@ -96,9 +96,11 @@ cp sync_state.json.example <docs_dir>/sync_state.json
 The tool has two subcommands:
 
 ```sh
-python main.py sync <docs_dir> [--root-page-id PAGE_ID] [--dry-run] [--root-is-file] [--force]
-python main.py pull <target_dir> --root-page-id PAGE_ID
+python main.py sync <docs_dir> [--root-page-id PAGE_ID] [--apply] [--root-is-file] [--force]
+python main.py pull <target_dir> --root-page-id PAGE_ID [--apply]
 ```
+
+> **Both commands default to dry-run mode.** Pass `--apply` to actually write changes (to Notion for `sync`, to disk for `pull`).
 
 ### `sync` — push local Markdown to Notion
 
@@ -106,22 +108,22 @@ python main.py pull <target_dir> --root-page-id PAGE_ID
 |---|---|---|
 | `docs_dir` | Always | Path to the folder containing Markdown files to sync |
 | `--root-page-id` | First run only | Notion page ID to sync under; saved to `sync_state.json` for subsequent runs |
-| `--dry-run` | Optional | Preview what would be created, updated, or archived — no changes made to Notion |
+| `--apply` | Optional | Actually write changes to Notion. Without this flag the command is a dry run — nothing is changed. |
 | `--root-is-file` | Optional | Write the single root `.md` file's content directly to the target page instead of creating a child page for it (see [Root-is-file](#root-is-file)) |
 | `--force` | Optional | Overwrite Notion even when remote drift is detected (Notion was edited directly since last sync). Without this flag, drifted pages are skipped with a warning. |
 
 ```sh
-# First run — provide the root page ID once
+# Preview what would be synced (dry run — default, no changes made)
 python main.py sync <docs_dir> --root-page-id YOUR_PAGE_ID
 
-# Subsequent runs — root page ID is read from sync_state.json
-python main.py sync <docs_dir>
+# Actually push changes to Notion
+python main.py sync <docs_dir> --root-page-id YOUR_PAGE_ID --apply
 
-# Preview changes without touching Notion
-python main.py sync <docs_dir> --dry-run
+# Subsequent runs — root page ID is read from sync_state.json
+python main.py sync <docs_dir> --apply
 
 # Sync with root file written directly to the target page
-python main.py sync <docs_dir> --root-page-id YOUR_PAGE_ID --root-is-file
+python main.py sync <docs_dir> --root-page-id YOUR_PAGE_ID --root-is-file --apply
 ```
 
 ### `pull` — download Notion pages to local Markdown
@@ -130,9 +132,14 @@ python main.py sync <docs_dir> --root-page-id YOUR_PAGE_ID --root-is-file
 |---|---|---|
 | `target_dir` | Always | Local directory to write downloaded Markdown files into |
 | `--root-page-id` | Always | Notion page or database ID to pull from |
+| `--apply` | Optional | Actually write downloaded files to disk. Without this flag the command is a dry run — nothing is written. |
 
 ```sh
+# Preview what would be downloaded (dry run — default, nothing written)
 python main.py pull <target_dir> --root-page-id YOUR_PAGE_ID
+
+# Actually download files to disk
+python main.py pull <target_dir> --root-page-id YOUR_PAGE_ID --apply
 ```
 
 The pull command auto-detects whether the root ID is a **regular page** or a **database**:
@@ -248,7 +255,7 @@ Headings (H1–H3), paragraphs, bullet and numbered lists (up to 3 levels of nes
 ### `sync` — first run (cold start — no `sync_state.json`)
 
 ```sh
-python main.py sync <docs_dir> --root-page-id YOUR_PAGE_ID
+python main.py sync <docs_dir> --root-page-id YOUR_PAGE_ID --apply
 ```
 ```
 No local state found. Discovering existing Notion pages (one-time)...
@@ -271,30 +278,32 @@ All files synced successfully!
 Total time taken: 0h 4m 19.00s
 ```
 
-### `sync` — subsequent run, nothing changed
+### `sync` — subsequent run, nothing changed (dry run — default)
 
 ```sh
 python main.py sync <docs_dir>
 ```
 ```
+DRY RUN — no changes will be made to Notion.
+
 Found 21 Markdown file(s). Starting sync...
 Mapped Fraud Control.md -> https://www.notion.so/Fraud-Control-<page_id>
 ...
 Page 'Fraud Control.md' unchanged. Skipping.
 ...
 
-======Sync Summary======
+======Dry Run Sync Summary======
 Total Files: 21
 Skipped: 21 (Already up to date)
-All files synced successfully!
+Dry run complete — no changes made to Notion.
 
-Total time taken: 0h 0m 8.00s
+Total time taken: 0h 0m 6.00s
 ```
 
-### `sync` — subsequent run, some files changed
+### `sync` — subsequent run, some files changed (apply)
 
 ```sh
-python main.py sync <docs_dir>
+python main.py sync <docs_dir> --apply
 ```
 ```
 Found 21 Markdown file(s). Starting sync...
@@ -314,33 +323,10 @@ All files synced successfully!
 Total time taken: 0h 0m 35.00s
 ```
 
-### `sync` — dry run
-
-```sh
-python main.py sync <docs_dir> --dry-run
-```
-```
-DRY RUN — no changes will be made to Notion.
-
-Found 21 Markdown file(s). Starting sync...
-[dry] Would create: 'New Page'
-  [dry] diff — keep: 45, delete: 2, insert: 3
-...
-
-======Dry Run Sync Summary======
-Total Files: 21
-[dry] Would Create: 1
-[dry] Would Update: 3
-Skipped: 17 (Already up to date)
-Dry run complete — no changes made to Notion.
-
-Total time taken: 0h 0m 6.00s
-```
-
 ### `sync` — a local file was deleted
 
 ```sh
-python main.py sync <docs_dir>
+python main.py sync <docs_dir> --apply
 ```
 ```
 Detected missing file: Fraud Control/old-page.md | Archiving Notion page...
@@ -353,7 +339,7 @@ Found 20 Markdown file(s). Starting sync...
 ### `sync` — with `--root-is-file`
 
 ```sh
-python main.py sync <docs_dir> --root-page-id YOUR_PAGE_ID --root-is-file
+python main.py sync <docs_dir> --root-page-id YOUR_PAGE_ID --root-is-file --apply
 ```
 ```
 Found 21 Markdown file(s). Starting sync...
@@ -386,10 +372,28 @@ No pages are created or modified. To resolve:
 - **Option A:** Point the sync at a regular Notion **page** instead of the database.
 - **Option B:** Drop `--root-is-file` — the root `.md` file will become a database row like all other files.
 
-### `pull` — from a page tree
+### `pull` — dry run (default)
 
 ```sh
 python main.py pull <target_dir> --root-page-id YOUR_PAGE_ID
+```
+```
+DRY RUN — no files will be written.
+
+Pulling from Notion YOUR_PAGE_ID into <target_dir> ...
+Root page: Fraud Control
+[dry] Would create: Fraud Control.md
+[dry] Would create: Fraud Control/Fraud Score System.md
+[dry] Would create: Fraud Control/User verification.md
+...
+
+Would download — 21 page(s) found in Notion
+```
+
+### `pull` — from a page tree (apply)
+
+```sh
+python main.py pull <target_dir> --root-page-id YOUR_PAGE_ID --apply
 ```
 ```
 Pulling from Notion YOUR_PAGE_ID into <target_dir> ...
@@ -402,10 +406,10 @@ Downloaded: Fraud Control/User verification.md
 Pull complete — 21 page(s) downloaded to <target_dir>
 ```
 
-### `pull` — from a database
+### `pull` — from a database (apply)
 
 ```sh
-python main.py pull <target_dir> --root-page-id bb865e41690d4489b3e928aefa49cace
+python main.py pull <target_dir> --root-page-id bb865e41690d4489b3e928aefa49cace --apply
 ```
 ```
 Pulling from Notion bb865e41690d4489b3e928aefa49cace into <target_dir> ...
@@ -429,7 +433,7 @@ notion-sync/
 ├── markdown_parser.py         # Markdown → Notion block conversion (sync direction)
 ├── sync_state.py              # Local state management (sync_state.json)
 ├── image_uploader.py          # Image upload via Notion file upload API
-├── config.py                  # Constants, environment variable loading, kill switch
+├── config.py                  # Constants and environment variable loading
 ├── utils.py                   # File discovery helpers
 ├── strip_notion_ids.py        # One-off utility: strips Notion UUID suffixes from exported files
 ├── requirements.txt           # Python dependencies
@@ -456,4 +460,4 @@ Run this **once** after a Notion export, before the first `sync`. It is not need
 - Ensure your Notion integration has **edit access** to the root page (**Share → Connect to**).
 - `sync_state.json` is auto-generated inside `<docs_dir>` and never lives in the project folder. If `<docs_dir>` is version-controlled, commit `sync_state.json` — it tracks the mapping between local files and Notion page IDs and should be shared across machines.
 - **Forcing a full re-sync:** if you change the markdown-to-Notion rendering logic or suspect Notion's content is out of sync with the local files, clear the content hashes to force a re-upload: set all `content_hash` values in `sync_state.json` to `null`, or delete the file entirely (page ID mappings will be re-discovered automatically on the next run).
-- **Kill switch during development:** set `WRITES_DISABLED = True` in `config.py` to block all Notion writes globally. Unlike `--dry-run` this requires no CLI flag and guards against accidental writes even when calling internal APIs directly. Remember to set it back to `False` before a real sync run.
+- **Safe by default:** both `sync` and `pull` run as dry runs unless `--apply` is passed — no changes are written to Notion or to disk without explicit opt-in.

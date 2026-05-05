@@ -16,7 +16,7 @@ Documentation lives in the same repository as the code it describes. Markdown fi
 2. Store the Notion integration token as a CI secret (`NOTION_TOKEN`).
 3. Run a first `pull` to bootstrap the docs folder and `sync_state.json`:
    ```sh
-   python main.py pull <docs_dir> --root-page-id <PAGE_ID>
+   python main.py pull <docs_dir> --root-page-id <PAGE_ID> --apply
    ```
 4. Commit both the downloaded Markdown files and `sync_state.json` to the repo.
 
@@ -50,7 +50,7 @@ The sync runs automatically on `main` after every PR is merged. CI then commits 
 
 Example CI step (after merge to `main`):
 ```sh
-python main.py sync <docs_dir> [--root-is-file]
+python main.py sync <docs_dir> --apply [--root-is-file]
 git config user.email "ci-bot@yourorg.com"
 git config user.name "CI Bot"
 git add <docs_dir>/sync_state.json
@@ -69,7 +69,7 @@ Sync right before squash-merging, so the sync commit is part of the PR itself. T
 
 ```sh
 git fetch origin && git rebase origin/main
-python main.py sync <docs_dir> [--root-is-file]
+python main.py sync <docs_dir> --apply [--root-is-file]
 git add <docs_dir>/sync_state.json
 git commit -m "sync: update Notion state"
 # squash-merge via GitHub UI
@@ -98,7 +98,7 @@ Run with --force to overwrite Notion, or pull first to merge the changes.
 
 ```sh
 # Accept local version, overwrite Notion
-python main.py sync <docs_dir> --force
+python main.py sync <docs_dir> --apply --force
 ```
 
 Pull also reseeds the drift baseline, so after a pull the next sync starts clean regardless of what was in Notion before.
@@ -118,20 +118,23 @@ The safest policy for teams: **treat Notion as read-only for humans**. Use Notio
 ## Quick reference
 
 ```sh
-# Bootstrap a new repo
+# Bootstrap a new repo (actually write files to disk)
+python main.py pull <docs_dir> --root-page-id <PAGE_ID> --apply
+
+# Preview what would be downloaded (dry run — default, nothing written)
 python main.py pull <docs_dir> --root-page-id <PAGE_ID>
 
-# Everyday sync (CI or pre-merge)
+# Preview what would be synced (dry run — default, no Notion changes)
 python main.py sync <docs_dir> [--root-is-file]
 
-# Preview changes without touching Notion
-python main.py sync <docs_dir> --dry-run
+# Everyday sync (CI or pre-merge) — actually push to Notion
+python main.py sync <docs_dir> --apply [--root-is-file]
 
 # Overwrite Notion even if drift is detected
-python main.py sync <docs_dir> --force
+python main.py sync <docs_dir> --apply --force
 
 # Recover after someone edited Notion directly
-python main.py pull <docs_dir> --root-page-id <PAGE_ID>
+python main.py pull <docs_dir> --root-page-id <PAGE_ID> --apply
 # review diffs, then sync
-python main.py sync <docs_dir>
+python main.py sync <docs_dir> --apply
 ```

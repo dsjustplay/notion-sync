@@ -5,7 +5,7 @@ import requests
 from difflib import SequenceMatcher
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
-from config import HEADERS, BLOCK_LIMIT, BASE_DIR, ROOT_IS_FILE, WRITES_DISABLED, RED, YELLOW, GREEN, RESET
+from config import HEADERS, BLOCK_LIMIT, BASE_DIR, ROOT_IS_FILE, RED, YELLOW, GREEN, RESET
 from markdown_parser import md_to_notion_blocks
 from sync_state import state
 
@@ -206,7 +206,7 @@ class NotionRootContext:
         return pages
 
 
-def init_root_context(root_id: str) -> NotionRootContext:
+def init_root_context(root_id: str, dry_run: bool = False) -> NotionRootContext:
     """Detect whether root_id is a page or database, cache the result, return context.
 
     On subsequent runs the type is read from sync_state.json to avoid extra
@@ -246,9 +246,9 @@ def init_root_context(root_id: str) -> NotionRootContext:
         cached_accepts = state.get_root_accepts_blocks()
         if cached_accepts is not None:
             root_accepts_blocks = cached_accepts
-        elif WRITES_DISABLED:
+        elif dry_run:
             # Can't probe without writing — assume blocks are supported.
-            # Will be probed and cached on the first real (non-disabled) run.
+            # Will be probed and cached on the first real (non-dry-run) run.
             pass
         else:
             probe = session.patch(
@@ -373,8 +373,6 @@ def _compute_notion_blocks_hash(blocks: list) -> str:
 
 def _delete_block(block_id: str):
     """Delete a single Notion block by ID."""
-    if WRITES_DISABLED:
-        return
     resp = session.delete(f"https://api.notion.com/v1/blocks/{block_id}", headers=HEADERS, timeout=REQUEST_TIMEOUT)
     if resp.status_code != 200:
         print(f"{RED}Failed to delete block {block_id}: {resp.status_code} - {resp.text}{RESET}")
@@ -389,8 +387,6 @@ def _insert_blocks_after(page_id: str, blocks: list, after_id: str | None) -> bo
     to satisfy Notion's API limit. Each subsequent chunk is inserted after the last
     block of the previous chunk.
     """
-    if WRITES_DISABLED:
-        return True
     current_after_id = after_id
 
     for i in range(0, len(blocks), NOTION_BLOCK_LIMIT):
@@ -631,9 +627,6 @@ def get_existing_page_content(page_id):
 
 def archive_page_in_notion(page_id):
     """Archives a Notion page instead of deleting it."""
-    if WRITES_DISABLED:
-        return "deleted"
-
     url = f"https://api.notion.com/v1/pages/{page_id}"
     data = {"archived": True}
 
@@ -720,8 +713,6 @@ def delete_notion_page_if_missing(local_md_files, dry_run: bool = False):
 
 def delete_existing_content(page_id):
     """Delete all content blocks from an existing Notion page before updating."""
-    if WRITES_DISABLED:
-        return
     url = f"https://api.notion.com/v1/blocks/{page_id}/children"
     params = {"page_size": 100}
 
@@ -754,8 +745,6 @@ def delete_existing_content(page_id):
 
 def create_or_update_notion_page(title, parent_id, blocks, is_folder=False):
     """Create a new Notion page or update an existing one if found."""
-    if WRITES_DISABLED:
-        return None
     ctx = _root_context
     existing_page_id = (
         ctx.search_direct_child(title, parent_id)
@@ -834,8 +823,6 @@ def get_or_create_folder_page(folder_path, dry_run: bool = False):
 
 def upload_blocks_to_notion(page_id, blocks):
     """Upload content blocks to Notion in chunks, ensuring no empty pages."""
-    if WRITES_DISABLED:
-        return "updated"
     if not blocks:
         print(f"Skipping empty block upload for page (ID: {page_id})")
         return
