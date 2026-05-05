@@ -440,8 +440,16 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
     blocks = fetch_blocks_recursive(page_id)
     md_content = f"# {page_title}\n\n" + blocks_to_md(blocks, dest_dir, page_title=page_title)
 
-    with open(filepath, "w", encoding="utf-8") as f:
-        f.write(md_content)
+    # Determine whether this is a create, update, or no-op before writing.
+    if not os.path.exists(filepath):
+        action = "create"
+    else:
+        with open(filepath, encoding="utf-8") as fh:
+            action = "unchanged" if fh.read() == md_content else "update"
+
+    if action != "unchanged":
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(md_content)
 
     content_hash = hashlib.sha256(md_content.encode()).hexdigest()
     state_key = os.path.relpath(filepath, base_dir)
@@ -454,7 +462,12 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
     if last_edited_time is not None:
         state.set_notion_last_edited(state_key, last_edited_time)
 
-    print(f"{GREEN}Downloaded: {rel_path}{RESET}")
+    if action == "create":
+        print(f"{GREEN}Created:     {rel_path}{RESET}")
+    elif action == "update":
+        print(f"{GREEN}Updated:     {rel_path}{RESET}")
+    else:
+        print(f"  Unchanged: {rel_path}")
 
 
 def _pull_children(page_id: str, page_title: str, dest_dir: str, base_dir: str,
