@@ -330,19 +330,38 @@ def _page_title(page_id: str) -> str:
 
 
 def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
-               dry_run: bool = False):
+               dry_run: bool = False, stats: dict | None = None):
     """Fetch a single Notion page, convert to Markdown, and write to disk.
 
-    In dry_run mode, prints what would be written without fetching blocks,
-    downloading images, or touching the filesystem.
+    In dry_run mode, fetches blocks (no images) to compare the Notion-side
+    fingerprint against the stored hash, then classifies each page as:
+      create    — file does not exist locally yet
+      update    — Notion content changed since last pull/sync
+      unchanged — Notion content matches stored fingerprint; apply would be a no-op
     """
     filename = _sanitise_filename(page_title) + ".md"
     filepath = os.path.join(dest_dir, filename)
     rel_path = os.path.relpath(filepath, base_dir)
 
     if dry_run:
-        action = "overwrite" if os.path.exists(filepath) else "create"
-        print(f"{YELLOW}[dry] Would {action}: {rel_path}{RESET}")
+        blocks = fetch_blocks_recursive(page_id)
+        current_notion_hash = _compute_notion_blocks_hash(blocks)
+        stored_notion_hash = state.get_notion_hash(rel_path)
+
+        if not os.path.exists(filepath):
+            label, color = "create", GREEN
+        elif current_notion_hash == stored_notion_hash:
+            label, color = "unchanged", RESET
+        else:
+            label, color = "update", YELLOW
+
+        if stats is not None:
+            stats[label] = stats.get(label, 0) + 1
+
+        if label == "unchanged":
+            print(f"  Unchanged: {rel_path}")
+        else:
+            print(f"{color}[dry] Would {label}: {rel_path}{RESET}")
         return
 
     os.makedirs(dest_dir, exist_ok=True)
@@ -365,7 +384,7 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
 
 
 def _pull_children(page_id: str, page_title: str, dest_dir: str, base_dir: str,
-                   seen_ids: set | None = None, dry_run: bool = False):
+                   seen_ids: set | None = None, dry_run: bool = False, stats: dict | None = None):
     """Recursively pull child pages of page_id into dest_dir/<page_title>/.
 
     seen_ids  – set of already-downloaded page IDs (normalized, no hyphens).
@@ -409,15 +428,15 @@ def _pull_children(page_id: str, page_title: str, dest_dir: str, base_dir: str,
                 seen_ids.add(norm_child_id)
                 child_title = block["child_page"]["title"].strip()
                 child_dir = os.path.join(dest_dir, _sanitise_filename(page_title))
-                _pull_page(child_id, child_title, child_dir, base_dir, dry_run=dry_run)
-                _pull_children(child_id, child_title, child_dir, base_dir, seen_ids, dry_run=dry_run)
+                _pull_page(child_id, child_title, child_dir, base_dir, dry_run=dry_run, stats=stats)
+                _pull_children(child_id, child_title, child_dir, base_dir, seen_ids, dry_run=dry_run, stats=stats)
         next_cursor = data.get("next_cursor")
         if not next_cursor:
             break
 
 
 def _pull_database(database_id: str, db_title: str, target_dir: str,
-                   dry_run: bool = False):
+                   dry_run: bool = False, stats: dict | None = None):
     """Pull every page in a Notion database into target_dir.
 
     Also pulls the content blocks of the database page itself (the text that
@@ -426,7 +445,7 @@ def _pull_database(database_id: str, db_title: str, target_dir: str,
     print(f"Database: {db_title}")
 
     # Pull the database page's own content blocks as the root file.
-    _pull_page(database_id, db_title, target_dir, target_dir, dry_run=dry_run)
+    _pull_page(database_id, db_title, target_dir, target_dir, dry_run=dry_run, stats=stats)
 
     # Rows (database pages) go into a subfolder named after the database,
     # consistent with how page-tree children are placed under their parent.
@@ -453,8 +472,8 @@ def _pull_database(database_id: str, db_title: str, target_dir: str,
                     break
             if not title:
                 title = page_id
-            _pull_page(page_id, title, rows_dir, target_dir, dry_run=dry_run)
-            _pull_children(page_id, title, rows_dir, target_dir, dry_run=dry_run)
+            _pull_page(page_id, title, rows_dir, target_dir, dry_run=dry_run, stats=stats)
+            _pull_children(page_id, title, rows_dir, target_dir, dry_run=dry_run, stats=stats)
         next_cursor = data.get("next_cursor")
         if not next_cursor:
             break
@@ -478,25 +497,37 @@ def pull_from_notion(target_dir: str, root_id: str, dry_run: bool = False):
 
     print(f"Pulling from Notion {root_id} into {target_dir} ...")
 
+    stats: dict = {}
+
     # Try as a page first, fall back to database.
     resp = session.get(f"https://api.notion.com/v1/pages/{root_id}", headers=HEADERS, timeout=REQUEST_TIMEOUT)
     if resp.status_code == 200:
         root_title = _page_title(root_id)
         print(f"Root page: {root_title}")
-        _pull_page(root_id, root_title, target_dir, target_dir, dry_run=dry_run)
-        _pull_children(root_id, root_title, target_dir, target_dir, dry_run=dry_run)
+        _pull_page(root_id, root_title, target_dir, target_dir, dry_run=dry_run, stats=stats)
+        _pull_children(root_id, root_title, target_dir, target_dir, dry_run=dry_run, stats=stats)
     else:
         resp2 = session.get(f"https://api.notion.com/v1/databases/{root_id}", headers=HEADERS, timeout=REQUEST_TIMEOUT)
         if resp2.status_code == 200:
             db = resp2.json()
             db_title = "".join(t.get("plain_text", "") for t in db.get("title", []))
-            _pull_database(root_id, db_title, target_dir, dry_run=dry_run)
+            _pull_database(root_id, db_title, target_dir, dry_run=dry_run, stats=stats)
         else:
             print(f"{RED}Could not resolve {root_id} as a page or database.{RESET}")
             return
 
     if not dry_run:
         state.save()
-    total = len(state.all_pages())
-    label = "Would download" if dry_run else "Pull complete"
-    print(f"\n{GREEN}{label} — {total} page(s) {'found in Notion' if dry_run else f'downloaded to {target_dir}'}{RESET}")
+
+    total = stats.get("create", 0) + stats.get("update", 0) + stats.get("unchanged", 0) if dry_run else len(state.all_pages())
+    if dry_run:
+        print(f"\n======Dry Run Pull Summary======")
+        print(f"Total pages: {total}")
+        if stats.get("create"):
+            print(f"{GREEN}Would create:  {stats['create']}{RESET}")
+        if stats.get("update"):
+            print(f"{YELLOW}Would update:  {stats['update']}{RESET}")
+        if stats.get("unchanged"):
+            print(f"Unchanged:     {stats['unchanged']}")
+    else:
+        print(f"\n{GREEN}Pull complete — {total} page(s) downloaded to {target_dir}{RESET}")
