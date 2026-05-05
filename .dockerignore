@@ -1,0 +1,11 @@
+.env
+.git
+.gitignore
+.github
+__pycache__
+venv
+docs_test
+docs
+*.md
+*.example
+strip_notion_ids.py

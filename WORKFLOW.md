@@ -12,15 +12,89 @@ Documentation lives in the same repository as the code it describes. Markdown fi
 
 ## Setup (first time, per repo)
 
-1. Add `notion-sync` as a dependency of your CI pipeline (e.g. as a submodule, a pinned install, or a shared action).
+1. Choose how you will run the tool: **Docker** (recommended — no Python required) or **directly** (requires Python 3.11+).
 2. Store the Notion integration token as a CI secret (`NOTION_TOKEN`).
-3. Run a first `pull` to bootstrap the docs folder and `sync_state.json`:
-   ```sh
-   python main.py pull <docs_dir> --root-page-id <PAGE_ID> --apply
-   ```
+3. Run a first `pull` to bootstrap the docs folder and `sync_state.json` (see the [Running with Docker](#running-with-docker) or [Running directly](#running-directly) sections below for the exact command).
 4. Commit both the downloaded Markdown files and `sync_state.json` to the repo.
 
 From this point on, `sync_state.json` is always committed. Do **not** add it to `.gitignore`.
+
+---
+
+## Running with Docker
+
+The published image `ghcr.io/dsjustplay/notion-sync` bundles Python and all dependencies — no local install required.
+
+**How it works**: mount your docs folder to the fixed container path `/workspace`, pass your Notion token as an environment variable, then append the normal CLI subcommand and flags:
+
+```sh
+docker run --rm \
+  -e NOTION_TOKEN=<your_token> \
+  -v /full/path/to/your/docs:/workspace \
+  ghcr.io/dsjustplay/notion-sync \
+  <subcommand> /workspace [flags]
+```
+
+### Common commands (Docker)
+
+```sh
+# Bootstrap a new repo (first pull — writes files to disk)
+docker run --rm \
+  -e NOTION_TOKEN=<your_token> \
+  -v /full/path/to/your/docs:/workspace \
+  ghcr.io/dsjustplay/notion-sync \
+  pull /workspace --root-page-id <PAGE_ID> --apply
+
+# Subsequent pulls (root page ID read from sync_state.json)
+docker run --rm \
+  -e NOTION_TOKEN=<your_token> \
+  -v /full/path/to/your/docs:/workspace \
+  ghcr.io/dsjustplay/notion-sync \
+  pull /workspace --apply
+
+# Dry-run push (default — no changes written to Notion)
+docker run --rm \
+  -e NOTION_TOKEN=<your_token> \
+  -v /full/path/to/your/docs:/workspace \
+  ghcr.io/dsjustplay/notion-sync \
+  push /workspace
+
+# Apply push
+docker run --rm \
+  -e NOTION_TOKEN=<your_token> \
+  -v /full/path/to/your/docs:/workspace \
+  ghcr.io/dsjustplay/notion-sync \
+  push /workspace --apply
+```
+
+### Using the image in a GitHub Actions CI job
+
+```yaml
+- name: Push docs to Notion
+  run: |
+    docker run --rm \
+      -e NOTION_TOKEN=${{ secrets.NOTION_TOKEN }} \
+      -v ${{ github.workspace }}/docs:/workspace \
+      ghcr.io/dsjustplay/notion-sync \
+      push /workspace --apply
+```
+
+---
+
+## Running directly
+
+Requires Python 3.11+ and the dependencies from `requirements.txt`.
+
+```sh
+# Install dependencies (first time)
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+
+# Set the Notion token
+echo "NOTION_TOKEN=<your_token>" > .env
+```
+
+Then use `python main.py <subcommand> …` as shown in the [Quick reference](#quick-reference) section below.
 
 ---
 
@@ -50,7 +124,16 @@ The push runs automatically on `main` after every PR is merged. CI then commits 
 
 Example CI step (after merge to `main`):
 ```sh
+# With Docker (recommended):
+docker run --rm \
+  -e NOTION_TOKEN=$NOTION_TOKEN \
+  -v $PWD/<docs_dir>:/workspace \
+  ghcr.io/dsjustplay/notion-sync \
+  push /workspace --apply
+
+# Or directly:
 python main.py push <docs_dir> --apply [--root-is-file]
+
 git config user.email "ci-bot@yourorg.com"
 git config user.name "CI Bot"
 git add <docs_dir>/sync_state.json
@@ -133,6 +216,50 @@ The safest policy for teams: **treat Notion as read-only for humans**. Use Notio
 ---
 
 ## Quick reference
+
+In all Docker examples below, replace `/full/path/to/docs` with the absolute path to your docs folder on the host. The container always uses `/workspace`.
+
+### Docker
+
+```sh
+# Bootstrap a new repo (first pull — root-page-id only needed once)
+docker run --rm -e NOTION_TOKEN=<token> \
+  -v /full/path/to/docs:/workspace \
+  ghcr.io/dsjustplay/notion-sync \
+  pull /workspace --root-page-id <PAGE_ID> --apply
+
+# Subsequent pulls
+docker run --rm -e NOTION_TOKEN=<token> \
+  -v /full/path/to/docs:/workspace \
+  ghcr.io/dsjustplay/notion-sync \
+  pull /workspace --apply
+
+# Dry-run pull (default — nothing written)
+docker run --rm -e NOTION_TOKEN=<token> \
+  -v /full/path/to/docs:/workspace \
+  ghcr.io/dsjustplay/notion-sync \
+  pull /workspace --diff
+
+# Dry-run push (default — no Notion changes)
+docker run --rm -e NOTION_TOKEN=<token> \
+  -v /full/path/to/docs:/workspace \
+  ghcr.io/dsjustplay/notion-sync \
+  push /workspace
+
+# Apply push
+docker run --rm -e NOTION_TOKEN=<token> \
+  -v /full/path/to/docs:/workspace \
+  ghcr.io/dsjustplay/notion-sync \
+  push /workspace --apply
+
+# Overwrite Notion even if drift detected
+docker run --rm -e NOTION_TOKEN=<token> \
+  -v /full/path/to/docs:/workspace \
+  ghcr.io/dsjustplay/notion-sync \
+  push /workspace --apply --force
+```
+
+### Directly (Python 3.11+)
 
 ```sh
 # Bootstrap a new repo (actually write files to disk; --root-page-id only needed once)
