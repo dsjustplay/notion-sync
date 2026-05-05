@@ -428,6 +428,8 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
                 diff_output = _format_diff(old_md, new_md, rel_path)
                 if diff_output:
                     print(diff_output)
+                else:
+                    print(f"  (content identical — only block metadata changed; hash will be reseeded on --apply)")
         return
 
     os.makedirs(dest_dir, exist_ok=True)
