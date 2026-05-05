@@ -542,7 +542,15 @@ def _pull_database(database_id: str, db_title: str, target_dir: str,
 
     # Rows (database pages) go into a subfolder named after the database,
     # consistent with how page-tree children are placed under their parent.
-    rows_dir = os.path.join(target_dir, _sanitise_filename(db_title))
+    folder_name = _sanitise_filename(db_title)
+    rows_dir = os.path.join(target_dir, folder_name)
+
+    # Cache the database ID as the folder entry so that a subsequent push
+    # recognises "Fraud Control/" (or whatever db_title is) as an existing
+    # Notion container rather than trying to create a new folder page.
+    if not dry_run:
+        state.set_folder_id(folder_name, database_id)
+        state.save()
 
     url = f"https://api.notion.com/v1/databases/{database_id}/query"
     next_cursor = None

@@ -852,20 +852,26 @@ def get_or_create_folder_page(folder_path, dry_run: bool = False):
         if cached_id:
             parent_id = cached_id
         else:
-            if dry_run:
-                print(f"{YELLOW}  [dry] Would create folder: {accumulated}{RESET}")
-                continue
+            # Always check Notion first (even in dry-run) so we don't falsely
+            # report folders as missing when they already exist in Notion but
+            # haven't been cached locally yet (e.g. after a fresh pull).
             ctx = _root_context
             folder_id = (
                 ctx.search_direct_child(folder, parent_id)
                 if ctx
                 else search_existing_page(folder, parent_id)
             )
-            if not folder_id:
-                folder_id = create_or_update_notion_page(folder, parent_id, [], is_folder=True)
             if folder_id:
                 state.set_folder_id(accumulated, folder_id)
                 parent_id = folder_id
+            else:
+                if dry_run:
+                    print(f"{YELLOW}  [dry] Would create folder: {accumulated}{RESET}")
+                    continue
+                folder_id = create_or_update_notion_page(folder, parent_id, [], is_folder=True)
+                if folder_id:
+                    state.set_folder_id(accumulated, folder_id)
+                    parent_id = folder_id
 
     return parent_id
 
