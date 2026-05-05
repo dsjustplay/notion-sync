@@ -437,6 +437,14 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
         return
 
     os.makedirs(dest_dir, exist_ok=True)
+
+    # Fast path: if the file exists and Notion's edit timestamp hasn't moved,
+    # skip the expensive block fetch — nothing to write.
+    if os.path.exists(filepath) and last_edited_time is not None:
+        if state.get_notion_last_edited(rel_path) == last_edited_time:
+            print(f"  Unchanged: {rel_path}")
+            return
+
     blocks = fetch_blocks_recursive(page_id)
     md_content = f"# {page_title}\n\n" + blocks_to_md(blocks, dest_dir, page_title=page_title)
 
