@@ -71,6 +71,11 @@ def _parse_args():
         action="store_true",
         help="Actually write downloaded files to disk. Without this flag the command runs as a dry run and only prints what would be downloaded.",
     )
+    pull_parser.add_argument(
+        "--diff",
+        action="store_true",
+        help="In dry-run mode, print a git-style unified diff for every page that would be updated.",
+    )
 
     return parser.parse_args()
 
@@ -278,6 +283,7 @@ if __name__ == "__main__":
                 print(f"{RED}Error: Notion root page ID is not set.{RESET}")
                 print("Pass it once with --root-page-id <PAGE_ID> and it will be saved for future runs.")
             else:
-                pull_from_notion(config.BASE_DIR, root_id, dry_run=not _args.apply)
+                pull_from_notion(config.BASE_DIR, root_id, dry_run=not _args.apply,
+                                 show_diff=_args.diff and not _args.apply)
     except KeyboardInterrupt:
         print(f"\n{RED}Aborted{RESET}")

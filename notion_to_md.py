@@ -4,6 +4,7 @@ notion_to_md.py — Download a Notion page tree and convert it to local Markdown
 Entry point: pull_from_notion(target_dir, root_page_id)
 """
 
+import difflib
 import hashlib
 import os
 import re
@@ -330,9 +331,44 @@ def _page_title(page_id: str) -> str:
     return rich_text_to_md(rich) or page_id
 
 
+_BOLD  = "\033[1m"
+_CYAN  = "\033[36m"
+
+def _format_diff(old_text: str, new_text: str, filepath: str) -> str:
+    """Return a coloured unified diff string (git-style) comparing old to new.
+
+    Header lines (--- / +++) are bold, @@ hunk lines are cyan,
+    removed lines are red, added lines are green.
+    Returns an empty string when there are no differences.
+    """
+    old_lines = old_text.splitlines(keepends=True)
+    new_lines = new_text.splitlines(keepends=True)
+    diff = list(difflib.unified_diff(
+        old_lines, new_lines,
+        fromfile=f"a/{filepath}",
+        tofile=f"b/{filepath}",
+        lineterm="",
+    ))
+    if not diff:
+        return ""
+    coloured = []
+    for line in diff:
+        if line.startswith("---") or line.startswith("+++"):
+            coloured.append(f"{_BOLD}{line}{RESET}")
+        elif line.startswith("@@"):
+            coloured.append(f"{_CYAN}{line}{RESET}")
+        elif line.startswith("-"):
+            coloured.append(f"{RED}{line}{RESET}")
+        elif line.startswith("+"):
+            coloured.append(f"{GREEN}{line}{RESET}")
+        else:
+            coloured.append(line)
+    return "\n".join(coloured)
+
+
 def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
                dry_run: bool = False, stats: dict | None = None,
-               last_edited_time: str | None = None):
+               last_edited_time: str | None = None, show_diff: bool = False):
     """Fetch a single Notion page, convert to Markdown, and write to disk.
 
     last_edited_time — ISO-8601 timestamp from Notion's page object.  When
@@ -340,6 +376,8 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
         the stored value the page is classified as unchanged immediately,
         without fetching any blocks.  Apply mode stores it so that future
         dry-runs benefit from the optimisation.
+    show_diff — when True and the page is classified as "update", print a
+        coloured unified diff (old = local file, new = Notion content).
 
     In dry_run mode, classifies each page as:
       create    — file does not exist locally yet
@@ -383,6 +421,13 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
                 state.set_notion_last_edited(rel_path, last_edited_time)
         else:
             print(f"{color}[dry] Would {label}: {rel_path}{RESET}")
+            if show_diff and label == "update":
+                new_md = f"# {page_title}\n\n" + blocks_to_md(blocks, dest_dir, page_title=page_title)
+                with open(filepath, encoding="utf-8") as fh:
+                    old_md = fh.read()
+                diff_output = _format_diff(old_md, new_md, rel_path)
+                if diff_output:
+                    print(diff_output)
         return
 
     os.makedirs(dest_dir, exist_ok=True)
@@ -407,7 +452,8 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
 
 
 def _pull_children(page_id: str, page_title: str, dest_dir: str, base_dir: str,
-                   seen_ids: set | None = None, dry_run: bool = False, stats: dict | None = None):
+                   seen_ids: set | None = None, dry_run: bool = False, stats: dict | None = None,
+                   show_diff: bool = False):
     """Recursively pull child pages of page_id into dest_dir/<page_title>/.
 
     seen_ids  – set of already-downloaded page IDs (normalized, no hyphens).
@@ -453,8 +499,9 @@ def _pull_children(page_id: str, page_title: str, dest_dir: str, base_dir: str,
                 child_title = block["child_page"]["title"].strip()
                 child_dir = os.path.join(dest_dir, _sanitise_filename(page_title))
                 _pull_page(child_id, child_title, child_dir, base_dir, dry_run=dry_run, stats=stats,
-                           last_edited_time=child_last_edited)
-                _pull_children(child_id, child_title, child_dir, base_dir, seen_ids, dry_run=dry_run, stats=stats)
+                           last_edited_time=child_last_edited, show_diff=show_diff)
+                _pull_children(child_id, child_title, child_dir, base_dir, seen_ids, dry_run=dry_run, stats=stats,
+                               show_diff=show_diff)
         next_cursor = data.get("next_cursor")
         if not next_cursor:
             break
@@ -462,7 +509,7 @@ def _pull_children(page_id: str, page_title: str, dest_dir: str, base_dir: str,
 
 def _pull_database(database_id: str, db_title: str, target_dir: str,
                    dry_run: bool = False, stats: dict | None = None,
-                   db_last_edited: str | None = None):
+                   db_last_edited: str | None = None, show_diff: bool = False):
     """Pull every page in a Notion database into target_dir.
 
     Also pulls the content blocks of the database page itself (the text that
@@ -474,7 +521,7 @@ def _pull_database(database_id: str, db_title: str, target_dir: str,
 
     # Pull the database page's own content blocks as the root file.
     _pull_page(database_id, db_title, target_dir, target_dir, dry_run=dry_run, stats=stats,
-               last_edited_time=db_last_edited)
+               last_edited_time=db_last_edited, show_diff=show_diff)
 
     # Rows (database pages) go into a subfolder named after the database,
     # consistent with how page-tree children are placed under their parent.
@@ -503,14 +550,15 @@ def _pull_database(database_id: str, db_title: str, target_dir: str,
             if not title:
                 title = page_id
             _pull_page(page_id, title, rows_dir, target_dir, dry_run=dry_run, stats=stats,
-                       last_edited_time=row_last_edited)
-            _pull_children(page_id, title, rows_dir, target_dir, dry_run=dry_run, stats=stats)
+                       last_edited_time=row_last_edited, show_diff=show_diff)
+            _pull_children(page_id, title, rows_dir, target_dir, dry_run=dry_run, stats=stats,
+                           show_diff=show_diff)
         next_cursor = data.get("next_cursor")
         if not next_cursor:
             break
 
 
-def pull_from_notion(target_dir: str, root_id: str, dry_run: bool = False):
+def pull_from_notion(target_dir: str, root_id: str, dry_run: bool = False, show_diff: bool = False):
     """Entry point: pull a full Notion page tree or database into target_dir.
 
     Auto-detects whether root_id is a regular page or a database and
@@ -541,8 +589,9 @@ def pull_from_notion(target_dir: str, root_id: str, dry_run: bool = False):
         root_title = rich_text_to_md(rich) or root_id
         print(f"Root page: {root_title}")
         _pull_page(root_id, root_title, target_dir, target_dir, dry_run=dry_run, stats=stats,
-                   last_edited_time=root_last_edited)
-        _pull_children(root_id, root_title, target_dir, target_dir, dry_run=dry_run, stats=stats)
+                   last_edited_time=root_last_edited, show_diff=show_diff)
+        _pull_children(root_id, root_title, target_dir, target_dir, dry_run=dry_run, stats=stats,
+                       show_diff=show_diff)
     else:
         resp2 = session.get(f"https://api.notion.com/v1/databases/{root_id}", headers=HEADERS, timeout=REQUEST_TIMEOUT)
         if resp2.status_code == 200:
@@ -550,7 +599,7 @@ def pull_from_notion(target_dir: str, root_id: str, dry_run: bool = False):
             db_title = "".join(t.get("plain_text", "") for t in db.get("title", []))
             db_last_edited = db.get("last_edited_time")
             _pull_database(root_id, db_title, target_dir, dry_run=dry_run, stats=stats,
-                           db_last_edited=db_last_edited)
+                           db_last_edited=db_last_edited, show_diff=show_diff)
         else:
             print(f"{RED}Could not resolve {root_id} as a page or database.{RESET}")
             return
