@@ -6,6 +6,7 @@ __pycache__/
 *.pyc
 docs_imported/
 docs/
+docs_test/
 sync_state.json
 setup.cfg
 api/
