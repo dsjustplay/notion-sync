@@ -124,6 +124,9 @@ python main.py sync <docs_dir> --apply
 
 # Sync with root file written directly to the target page
 python main.py sync <docs_dir> --root-page-id YOUR_PAGE_ID --root-is-file --apply
+
+# Overwrite Notion even if drift is detected (skip the pre-flight check)
+python main.py sync <docs_dir> --apply --force
 ```
 
 ### `pull` — download Notion pages to local Markdown
