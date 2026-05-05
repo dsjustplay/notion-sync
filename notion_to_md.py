@@ -389,15 +389,15 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
     rel_path = os.path.relpath(filepath, base_dir)
 
     if dry_run:
+        stored_last_edited = state.get_notion_last_edited(rel_path)
+
         # Fast path: if the file exists and Notion's edit timestamp hasn't moved,
         # we can skip the expensive block fetch entirely.
-        if os.path.exists(filepath) and last_edited_time is not None:
-            stored_last_edited = state.get_notion_last_edited(rel_path)
-            if stored_last_edited == last_edited_time:
-                if stats is not None:
-                    stats["unchanged"] = stats.get("unchanged", 0) + 1
-                print(f"  Unchanged: {rel_path}")
-                return
+        if os.path.exists(filepath) and last_edited_time is not None and stored_last_edited == last_edited_time:
+            if stats is not None:
+                stats["unchanged"] = stats.get("unchanged", 0) + 1
+            print(f"  Unchanged: {rel_path}")
+            return
 
         # Full check: fetch blocks and compare content fingerprint.
         blocks = fetch_blocks_recursive(page_id)
@@ -429,7 +429,11 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
                 if diff_output:
                     print(diff_output)
                 else:
-                    print(f"  (content identical — only block metadata changed; hash will be reseeded on --apply)")
+                    print(f"  (content identical — block metadata only; --apply will reseed state)")
+                    if stored_notion_hash and current_notion_hash:
+                        print(f"    notion hash:  {stored_notion_hash[:8]} → {current_notion_hash[:8]}")
+                    if stored_last_edited and last_edited_time and stored_last_edited != last_edited_time:
+                        print(f"    last edited:  {stored_last_edited} → {last_edited_time}")
         return
 
     os.makedirs(dest_dir, exist_ok=True)
