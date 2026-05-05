@@ -118,11 +118,14 @@ The safest policy for teams: **treat Notion as read-only for humans**. Use Notio
 ## Quick reference
 
 ```sh
-# Bootstrap a new repo (actually write files to disk)
+# Bootstrap a new repo (actually write files to disk; --root-page-id only needed once)
 python main.py pull <docs_dir> --root-page-id <PAGE_ID> --apply
 
+# Subsequent pulls — root page ID is read from sync_state.json
+python main.py pull <docs_dir> --apply
+
 # Preview what would be downloaded (dry run — default, nothing written)
-python main.py pull <docs_dir> --root-page-id <PAGE_ID>
+python main.py pull <docs_dir>
 
 # Preview what would be synced (dry run — default, no Notion changes)
 python main.py sync <docs_dir> [--root-is-file]
@@ -134,7 +137,7 @@ python main.py sync <docs_dir> --apply [--root-is-file]
 python main.py sync <docs_dir> --apply --force
 
 # Recover after someone edited Notion directly
-python main.py pull <docs_dir> --root-page-id <PAGE_ID> --apply
+python main.py pull <docs_dir> --apply
 # review diffs, then sync
 python main.py sync <docs_dir> --apply
 ```

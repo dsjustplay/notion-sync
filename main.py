@@ -64,8 +64,7 @@ def _parse_args():
     pull_parser.add_argument(
         "--root-page-id",
         metavar="PAGE_ID",
-        required=True,
-        help="Notion page ID to pull from.",
+        help="Notion page ID to pull from. Required on the first run; stored in sync_state.json afterwards.",
     )
     pull_parser.add_argument(
         "--apply",
@@ -273,6 +272,12 @@ if __name__ == "__main__":
         if _args.command == "sync":
             sync_markdown_to_notion()
         elif _args.command == "pull":
-            pull_from_notion(config.BASE_DIR, _args.root_page_id, dry_run=not _args.apply)
+            state.load()
+            root_id = _args.root_page_id or state.get_notion_root_page_id()
+            if not root_id:
+                print(f"{RED}Error: Notion root page ID is not set.{RESET}")
+                print("Pass it once with --root-page-id <PAGE_ID> and it will be saved for future runs.")
+            else:
+                pull_from_notion(config.BASE_DIR, root_id, dry_run=not _args.apply)
     except KeyboardInterrupt:
         print(f"\n{RED}Aborted{RESET}")

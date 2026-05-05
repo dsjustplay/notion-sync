@@ -97,7 +97,7 @@ The tool has two subcommands:
 
 ```sh
 python main.py sync <docs_dir> [--root-page-id PAGE_ID] [--apply] [--root-is-file] [--force]
-python main.py pull <target_dir> --root-page-id PAGE_ID [--apply]
+python main.py pull <target_dir> [--root-page-id PAGE_ID] [--apply]
 ```
 
 > **Both commands default to dry-run mode.** Pass `--apply` to actually write changes (to Notion for `sync`, to disk for `pull`).
@@ -131,15 +131,18 @@ python main.py sync <docs_dir> --root-page-id YOUR_PAGE_ID --root-is-file --appl
 | Argument | Required | Description |
 |---|---|---|
 | `target_dir` | Always | Local directory to write downloaded Markdown files into |
-| `--root-page-id` | Always | Notion page or database ID to pull from |
+| `--root-page-id` | First run only | Notion page or database ID to pull from; stored in `sync_state.json` for subsequent runs |
 | `--apply` | Optional | Actually write downloaded files to disk. Without this flag the command is a dry run — nothing is written. |
 
 ```sh
-# Preview what would be downloaded (dry run — default, nothing written)
-python main.py pull <target_dir> --root-page-id YOUR_PAGE_ID
-
-# Actually download files to disk
+# First run — provide the root page ID once
 python main.py pull <target_dir> --root-page-id YOUR_PAGE_ID --apply
+
+# Subsequent runs — root page ID is read from sync_state.json
+python main.py pull <target_dir> --apply
+
+# Preview what would be downloaded (dry run — default, nothing written)
+python main.py pull <target_dir>
 ```
 
 The pull command auto-detects whether the root ID is a **regular page** or a **database**:
@@ -375,6 +378,7 @@ No pages are created or modified. To resolve:
 ### `pull` — dry run (default)
 
 ```sh
+# First run requires --root-page-id; subsequent runs read it from sync_state.json
 python main.py pull <target_dir> --root-page-id YOUR_PAGE_ID
 ```
 ```
