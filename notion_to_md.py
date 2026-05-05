@@ -295,11 +295,12 @@ def _normalize_id(notion_id: str) -> str:
     return notion_id.replace("-", "")
 
 
-def _get_page_parent_id(page_id: str) -> str | None:
-    """Return the normalized parent page ID of a Notion page.
+def _get_page_meta(page_id: str) -> tuple[str | None, str | None]:
+    """Return (normalized_parent_page_id, last_edited_time) for a Notion page.
 
-    Returns None if the parent is not a page (e.g. a database or workspace root),
-    or if the request fails.
+    parent_page_id is None if the parent is not a page (e.g. a database or
+    workspace root), or if the request fails.
+    last_edited_time is the ISO-8601 string from Notion, or None on failure.
     """
     resp = session.get(
         f"https://api.notion.com/v1/pages/{page_id}",
@@ -307,11 +308,11 @@ def _get_page_parent_id(page_id: str) -> str | None:
         timeout=REQUEST_TIMEOUT,
     )
     if resp.status_code != 200:
-        return None
-    parent = resp.json().get("parent", {})
-    if parent.get("type") == "page_id":
-        return _normalize_id(parent["page_id"])
-    return None
+        return None, None
+    data = resp.json()
+    parent = data.get("parent", {})
+    parent_id = _normalize_id(parent["page_id"]) if parent.get("type") == "page_id" else None
+    return parent_id, data.get("last_edited_time")
 
 
 def _page_title(page_id: str) -> str:
@@ -330,11 +331,17 @@ def _page_title(page_id: str) -> str:
 
 
 def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
-               dry_run: bool = False, stats: dict | None = None):
+               dry_run: bool = False, stats: dict | None = None,
+               last_edited_time: str | None = None):
     """Fetch a single Notion page, convert to Markdown, and write to disk.
 
-    In dry_run mode, fetches blocks (no images) to compare the Notion-side
-    fingerprint against the stored hash, then classifies each page as:
+    last_edited_time — ISO-8601 timestamp from Notion's page object.  When
+        provided the dry-run path uses it as a fast pre-check: if it matches
+        the stored value the page is classified as unchanged immediately,
+        without fetching any blocks.  Apply mode stores it so that future
+        dry-runs benefit from the optimisation.
+
+    In dry_run mode, classifies each page as:
       create    — file does not exist locally yet
       update    — Notion content changed since last pull/sync
       unchanged — Notion content matches stored fingerprint; apply would be a no-op
@@ -344,6 +351,17 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
     rel_path = os.path.relpath(filepath, base_dir)
 
     if dry_run:
+        # Fast path: if the file exists and Notion's edit timestamp hasn't moved,
+        # we can skip the expensive block fetch entirely.
+        if os.path.exists(filepath) and last_edited_time is not None:
+            stored_last_edited = state.get_notion_last_edited(rel_path)
+            if stored_last_edited == last_edited_time:
+                if stats is not None:
+                    stats["unchanged"] = stats.get("unchanged", 0) + 1
+                print(f"  Unchanged: {rel_path}")
+                return
+
+        # Full check: fetch blocks and compare content fingerprint.
         blocks = fetch_blocks_recursive(page_id)
         current_notion_hash = _compute_notion_blocks_hash(blocks)
         stored_notion_hash = state.get_notion_hash(rel_path)
@@ -360,6 +378,9 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
 
         if label == "unchanged":
             print(f"  Unchanged: {rel_path}")
+            # Seed the timestamp so the next dry-run can skip the block fetch.
+            if last_edited_time is not None:
+                state.set_notion_last_edited(rel_path, last_edited_time)
         else:
             print(f"{color}[dry] Would {label}: {rel_path}{RESET}")
         return
@@ -379,6 +400,8 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
     # This establishes the baseline for remote drift detection: the next sync
     # of this file can detect if Notion was edited between the pull and the push.
     state.set_notion_hash(state_key, _compute_notion_blocks_hash(blocks))
+    if last_edited_time is not None:
+        state.set_notion_last_edited(state_key, last_edited_time)
 
     print(f"{GREEN}Downloaded: {rel_path}{RESET}")
 
@@ -419,7 +442,8 @@ def _pull_children(page_id: str, page_title: str, dest_dir: str, base_dir: str,
                 # Verify this page is truly a direct child of the current page.
                 # Notion can leave stale child_page blocks when pages are moved,
                 # causing the same page to appear under multiple parents.
-                actual_parent_id = _get_page_parent_id(child_id)
+                # _get_page_meta returns (parent_id, last_edited_time) in one call.
+                actual_parent_id, child_last_edited = _get_page_meta(child_id)
                 if actual_parent_id is not None and actual_parent_id != norm_page_id:
                     print(f"{YELLOW}Skipping '{block['child_page']['title']}' under "
                           f"'{page_title}' — its actual parent differs.{RESET}")
@@ -428,7 +452,8 @@ def _pull_children(page_id: str, page_title: str, dest_dir: str, base_dir: str,
                 seen_ids.add(norm_child_id)
                 child_title = block["child_page"]["title"].strip()
                 child_dir = os.path.join(dest_dir, _sanitise_filename(page_title))
-                _pull_page(child_id, child_title, child_dir, base_dir, dry_run=dry_run, stats=stats)
+                _pull_page(child_id, child_title, child_dir, base_dir, dry_run=dry_run, stats=stats,
+                           last_edited_time=child_last_edited)
                 _pull_children(child_id, child_title, child_dir, base_dir, seen_ids, dry_run=dry_run, stats=stats)
         next_cursor = data.get("next_cursor")
         if not next_cursor:
@@ -436,16 +461,20 @@ def _pull_children(page_id: str, page_title: str, dest_dir: str, base_dir: str,
 
 
 def _pull_database(database_id: str, db_title: str, target_dir: str,
-                   dry_run: bool = False, stats: dict | None = None):
+                   dry_run: bool = False, stats: dict | None = None,
+                   db_last_edited: str | None = None):
     """Pull every page in a Notion database into target_dir.
 
     Also pulls the content blocks of the database page itself (the text that
     sits above the table view in Notion) and saves it as <db_title>.md.
+    db_last_edited is the last_edited_time from the /databases/{id} API response;
+    passed through to enable the timestamp fast-skip for the cover page.
     """
     print(f"Database: {db_title}")
 
     # Pull the database page's own content blocks as the root file.
-    _pull_page(database_id, db_title, target_dir, target_dir, dry_run=dry_run, stats=stats)
+    _pull_page(database_id, db_title, target_dir, target_dir, dry_run=dry_run, stats=stats,
+               last_edited_time=db_last_edited)
 
     # Rows (database pages) go into a subfolder named after the database,
     # consistent with how page-tree children are placed under their parent.
@@ -464,6 +493,7 @@ def _pull_database(database_id: str, db_title: str, target_dir: str,
         data = resp.json()
         for row in data.get("results", []):
             page_id = row["id"]
+            row_last_edited = row.get("last_edited_time")
             # Find the title property (type=="title")
             title = ""
             for prop in row.get("properties", {}).values():
@@ -472,7 +502,8 @@ def _pull_database(database_id: str, db_title: str, target_dir: str,
                     break
             if not title:
                 title = page_id
-            _pull_page(page_id, title, rows_dir, target_dir, dry_run=dry_run, stats=stats)
+            _pull_page(page_id, title, rows_dir, target_dir, dry_run=dry_run, stats=stats,
+                       last_edited_time=row_last_edited)
             _pull_children(page_id, title, rows_dir, target_dir, dry_run=dry_run, stats=stats)
         next_cursor = data.get("next_cursor")
         if not next_cursor:
@@ -502,22 +533,32 @@ def pull_from_notion(target_dir: str, root_id: str, dry_run: bool = False):
     # Try as a page first, fall back to database.
     resp = session.get(f"https://api.notion.com/v1/pages/{root_id}", headers=HEADERS, timeout=REQUEST_TIMEOUT)
     if resp.status_code == 200:
-        root_title = _page_title(root_id)
+        root_data = resp.json()
+        root_last_edited = root_data.get("last_edited_time")
+        props = root_data.get("properties", {})
+        title_prop = props.get("title", {})
+        rich = title_prop.get("title", [])
+        root_title = rich_text_to_md(rich) or root_id
         print(f"Root page: {root_title}")
-        _pull_page(root_id, root_title, target_dir, target_dir, dry_run=dry_run, stats=stats)
+        _pull_page(root_id, root_title, target_dir, target_dir, dry_run=dry_run, stats=stats,
+                   last_edited_time=root_last_edited)
         _pull_children(root_id, root_title, target_dir, target_dir, dry_run=dry_run, stats=stats)
     else:
         resp2 = session.get(f"https://api.notion.com/v1/databases/{root_id}", headers=HEADERS, timeout=REQUEST_TIMEOUT)
         if resp2.status_code == 200:
             db = resp2.json()
             db_title = "".join(t.get("plain_text", "") for t in db.get("title", []))
-            _pull_database(root_id, db_title, target_dir, dry_run=dry_run, stats=stats)
+            db_last_edited = db.get("last_edited_time")
+            _pull_database(root_id, db_title, target_dir, dry_run=dry_run, stats=stats,
+                           db_last_edited=db_last_edited)
         else:
             print(f"{RED}Could not resolve {root_id} as a page or database.{RESET}")
             return
 
-    if not dry_run:
-        state.save()
+    # Always persist state: apply mode saves everything; dry-run mode saves only
+    # the notion_last_edited timestamps that were seeded during the run so that
+    # the next dry-run can use the fast timestamp-based skip.
+    state.save()
 
     total = stats.get("create", 0) + stats.get("update", 0) + stats.get("unchanged", 0) if dry_run else len(state.all_pages())
     if dry_run:

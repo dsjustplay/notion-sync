@@ -61,6 +61,14 @@ class SyncState:
         entry = self._data["pages"].setdefault(local_path, {"notion_id": None, "content_hash": None})
         entry["content_hash"] = content_hash
 
+    def get_notion_last_edited(self, local_path: str) -> str | None:
+        entry = self._data["pages"].get(local_path)
+        return entry.get("notion_last_edited") if entry else None
+
+    def set_notion_last_edited(self, local_path: str, last_edited_time: str):
+        entry = self._data["pages"].setdefault(local_path, {"notion_id": None, "content_hash": None})
+        entry["notion_last_edited"] = last_edited_time
+
     def get_notion_hash(self, local_path: str) -> str | None:
         """Return the fingerprint of Notion's blocks as they were after the last sync, or None."""
         entry = self._data["pages"].get(local_path)
