@@ -12,9 +12,9 @@ def _parse_args():
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # -- sync subcommand (push local → Notion) --------------------------------
+    # -- push subcommand (push local → Notion) --------------------------------
     sync_parser = subparsers.add_parser(
-        "sync",
+        "push",
         help="Push local Markdown files to Notion.",
     )
     sync_parser.add_argument(
@@ -82,7 +82,7 @@ def _parse_args():
 _args = _parse_args()
 
 import config  # noqa: E402
-if _args.command == "sync":
+if _args.command == "push":
     config.BASE_DIR = os.path.abspath(_args.docs_dir)
     config.ROOT_IS_FILE = _args.root_is_file
 else:
@@ -97,9 +97,9 @@ from config import RED, YELLOW, GREEN, RESET  # noqa: E402
 from sync_state import state  # noqa: E402
 from notion_to_md import pull_from_notion  # noqa: E402
 
-def sync_markdown_to_notion():
+def push_markdown_to_notion():
     """
-    Finds local Markdown files, syncs them to Notion by creating or updating pages,
+    Finds local Markdown files, pushes them to Notion by creating or updating pages,
     and updates internal links in each file to point to the corresponding Notion page.
     """
 
@@ -267,8 +267,8 @@ def sync_markdown_to_notion():
 
 if __name__ == "__main__":
     try:
-        if _args.command == "sync":
-            sync_markdown_to_notion()
+        if _args.command == "push":
+            push_markdown_to_notion()
         elif _args.command == "pull":
             state.load()
             root_id = _args.root_page_id or state.get_notion_root_page_id()
