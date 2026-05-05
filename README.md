@@ -2,6 +2,8 @@
 
 Syncs Markdown (`.md`) files from a local directory to Notion, creating and updating pages while preserving your folder hierarchy.
 
+> **Team workflow & CI setup** → [WORKFLOW.md](WORKFLOW.md)
+
 ## Features
 
 **Sync (local → Notion)**
@@ -94,7 +96,7 @@ cp sync_state.json.example <docs_dir>/sync_state.json
 The tool has two subcommands:
 
 ```sh
-python main.py sync <docs_dir> [--root-page-id PAGE_ID] [--dry-run] [--root-is-file]
+python main.py sync <docs_dir> [--root-page-id PAGE_ID] [--dry-run] [--root-is-file] [--force]
 python main.py pull <target_dir> --root-page-id PAGE_ID
 ```
 
@@ -106,6 +108,7 @@ python main.py pull <target_dir> --root-page-id PAGE_ID
 | `--root-page-id` | First run only | Notion page ID to sync under; saved to `sync_state.json` for subsequent runs |
 | `--dry-run` | Optional | Preview what would be created, updated, or archived — no changes made to Notion |
 | `--root-is-file` | Optional | Write the single root `.md` file's content directly to the target page instead of creating a child page for it (see [Root-is-file](#root-is-file)) |
+| `--force` | Optional | Overwrite Notion even when remote drift is detected (Notion was edited directly since last sync). Without this flag, drifted pages are skipped with a warning. |
 
 ```sh
 # First run — provide the root page ID once
