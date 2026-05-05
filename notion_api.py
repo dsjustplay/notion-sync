@@ -351,24 +351,72 @@ def _strip_block_metadata(blocks: list) -> list:
     return [{k: v for k, v in b.items() if not k.startswith("_")} for b in blocks]
 
 
-def _compute_notion_blocks_hash(blocks: list) -> str:
-    """Stable SHA-256 fingerprint of a list of Notion blocks for drift detection.
+def _fetch_notion_last_edited(page_id: str) -> str | None:
+    """Return the current last_edited_time for a page, or None on failure."""
+    resp = session.get(
+        f"https://api.notion.com/v1/pages/{page_id}",
+        headers=HEADERS,
+        timeout=REQUEST_TIMEOUT,
+    )
+    if resp.status_code == 200:
+        return resp.json().get("last_edited_time")
+    return None
 
-    Rules:
-    - child_page blocks are always excluded (they are Notion-owned structural elements).
-    - All image fingerprints are normalised to "image:cached" so that the hash
-      produced right after a push (when new images carry upload IDs) matches the
-      hash produced when those same blocks are later fetched from Notion.
+
+def check_notion_drift(md_files: list, dry_run: bool = False) -> list:
+    """Pre-flight drift check: detect pages edited in Notion since the last push/pull.
+
+    For every file whose local content has changed (would be pushed in Phase 2),
+    fetches Notion's current last_edited_time and compares it with the stored value.
+    Pages with no stored timestamp (first run or legacy state) are skipped — we
+    cannot know whether they drifted.
+
+    In dry-run mode:  prints a warning for each drifted page but does not abort.
+    In apply mode:    the caller should abort if the returned list is non-empty.
+
+    Returns a list of dicts {file, state_key, stored_ts, notion_ts} for drifted pages.
     """
-    parts = []
-    for block in blocks:
-        if block.get("type") == "child_page":
+    drifted = []
+    for file_path in md_files:
+        state_key = os.path.relpath(file_path, BASE_DIR)
+
+        # Only check files that would actually be pushed (content changed).
+        stored_hash = state.get_page_hash(state_key)
+        try:
+            with open(file_path, encoding="utf-8") as fh:
+                current_hash = _md_hash(fh.read())
+        except OSError:
             continue
-        fp = _block_fingerprint(block)
-        if fp.startswith("image:"):
-            fp = "image:cached"
-        parts.append(fp)
-    return hashlib.sha256("|".join(parts).encode()).hexdigest()
+        if stored_hash == current_hash:
+            continue  # unchanged — won't be pushed, no point checking
+
+        page_id = state.get_page_id(state_key)
+        stored_ts = state.get_notion_last_edited(state_key)
+        if not page_id or not stored_ts:
+            continue  # new page or no baseline — skip
+
+        notion_ts = _fetch_notion_last_edited(page_id)
+        if notion_ts and notion_ts != stored_ts:
+            drifted.append({
+                "file": file_path,
+                "state_key": state_key,
+                "stored_ts": stored_ts,
+                "notion_ts": notion_ts,
+            })
+
+    if drifted:
+        label = "Warning" if dry_run else "Aborting"
+        print(f"{RED}{label}: the following page(s) were edited in Notion since your last pull:{RESET}")
+        for d in drifted:
+            print(f"  {d['state_key']}")
+            print(f"    last known: {d['stored_ts']}")
+            print(f"    notion now: {d['notion_ts']}")
+        suggestion = "Run 'pull' to get the latest changes before syncing."
+        if not dry_run:
+            suggestion += " Use --force to overwrite Notion anyway."
+        print(f"{YELLOW}{suggestion}{RESET}")
+
+    return drifted
 
 
 def _delete_block(block_id: str):
@@ -903,22 +951,15 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
             if not dry_run:
                 upload_blocks_to_notion(root_page_id, _strip_block_metadata(blocks))
         else:
-            # Remote drift detection: check whether Notion was edited directly since last sync.
-            stored_notion_hash = state.get_notion_hash(state_key)
-            if stored_notion_hash is not None and not force:
-                current_notion_hash = _compute_notion_blocks_hash(existing_blocks)
-                if current_notion_hash != stored_notion_hash:
-                    print(f"{RED}Remote drift detected on '{file_name}': Notion was edited directly since last sync. "
-                          f"Run with --force to overwrite Notion, or pull first to merge the changes.{RESET}")
-                    return ("drift", root_page_id)
-
             # Pass the full block list — sync_page_blocks now handles child_page
             # filtering internally (it extracts titles and strips the matching
             # link-only paragraphs from the local side too).
             sync_page_blocks(root_page_id, existing_blocks, blocks, dry_run=dry_run)
         if not dry_run:
             state.set_page_hash(state_key, current_hash)
-            state.set_notion_hash(state_key, _compute_notion_blocks_hash(blocks))
+            new_ts = _fetch_notion_last_edited(root_page_id)
+            if new_ts:
+                state.set_notion_last_edited(state_key, new_ts)
             state.save()
         return ("updated", root_page_id)
 
@@ -993,22 +1034,15 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
                 existing_page_id = None
                 # fall through to the creation block below
             else:
-                # Remote drift detection: check whether Notion was edited directly since last sync.
-                stored_notion_hash = state.get_notion_hash(state_key)
-                if stored_notion_hash is not None and not force:
-                    current_notion_hash = _compute_notion_blocks_hash(existing_blocks)
-                    if current_notion_hash != stored_notion_hash:
-                        print(f"{RED}Remote drift detected on '{file_name}': Notion was edited directly since last sync. "
-                              f"Run with --force to overwrite Notion, or pull first to merge the changes.{RESET}")
-                        return ("drift", existing_page_id)
-
                 content_blocks = [b for b in existing_blocks if b.get("type") != "child_page"]
                 status = sync_page_blocks(existing_page_id, content_blocks, blocks, dry_run=dry_run)
                 if status == "failed":
                     return ("failed", existing_page_id)
                 if not dry_run:
                     state.set_page_hash(state_key, current_hash)
-                    state.set_notion_hash(state_key, _compute_notion_blocks_hash(blocks))
+                    new_ts = _fetch_notion_last_edited(existing_page_id)
+                    if new_ts:
+                        state.set_notion_last_edited(state_key, new_ts)
                     state.save()
                 return ("updated", existing_page_id)
         else:

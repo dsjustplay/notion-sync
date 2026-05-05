@@ -91,7 +91,7 @@ else:
 
 import time  # noqa: E402
 from utils import find_md_files  # noqa: E402
-from notion_api import upload_markdown_file_to_notion, delete_notion_page_if_missing, reconcile_state, init_root_context  # noqa: E402
+from notion_api import upload_markdown_file_to_notion, delete_notion_page_if_missing, reconcile_state, init_root_context, check_notion_drift  # noqa: E402
 from markdown_parser import replace_md_links  # noqa: E402
 from config import RED, YELLOW, GREEN, RESET  # noqa: E402
 from sync_state import state  # noqa: E402
@@ -161,9 +161,7 @@ def sync_markdown_to_notion():
     updated_pages = 0
     skipped_pages = 0
     failed_uploads = 0
-    drift_pages = 0
     failed_files = []
-    drift_files = []
     dry_run_new = set()  # Track new pages so Phase 2 doesn't report them again.
 
     for md_file in md_files:
@@ -195,6 +193,13 @@ def sync_markdown_to_notion():
         elif not dry_run:
             print(f"{RED}Warning: No page ID returned for {md_file}.{RESET}")
 
+    # Pre-flight drift check: warn (dry-run) or abort (apply) if any pages that
+    # would be pushed have been independently edited in Notion since the last pull.
+    if not force:
+        drifted = check_notion_drift(md_files, dry_run=dry_run)
+        if drifted and not dry_run:
+            return  # abort before any writes
+
     # Phase 2: Sync page content (diff and patch existing pages).
     for md_file in md_files:
         if md_file in dry_run_new:
@@ -222,16 +227,12 @@ def sync_markdown_to_notion():
         elif status == "failed":
             failed_uploads += 1
             failed_files.append(md_file)
-        elif status == "drift":
-            drift_pages += 1
-            drift_files.append(md_file)
 
     # Calculate the total execution time.
     end_time = time.time()
     elapsed_time = end_time - start_time
 
-    # Recalculate skipped count (drift pages count as skipped from the file total perspective).
-    skipped_pages = total_files - (new_pages + updated_pages + failed_uploads + drift_pages)
+    skipped_pages = total_files - (new_pages + updated_pages + failed_uploads)
 
     # Display the final sync summary.
     prefix = "[dry] Would " if dry_run else ""
@@ -247,14 +248,6 @@ def sync_markdown_to_notion():
     if deleted_pages > 0:
         print(f"{YELLOW}{prefix}Archive: {deleted_pages}{RESET}")
 
-    # Report remote drift (Notion edited directly since last sync).
-    if drift_pages > 0:
-        print(f"{RED}Drift detected (skipped): {drift_pages}{RESET}")
-        print("The following pages were edited directly in Notion and were NOT overwritten:")
-        for file in drift_files:
-            print(f"{RED} - {os.path.basename(file)}{RESET}")
-        print(f"Pull first to merge, or re-run with --force to overwrite Notion.")
-
     # Report any failed uploads.
     if failed_uploads > 0:
         print(f"{RED}Failed: {failed_uploads}/{total_files}{RESET}")
@@ -263,7 +256,7 @@ def sync_markdown_to_notion():
             print(f"{RED} - {str(file)}{RESET}")
 
     # Success message when all files have synced without failures.
-    if (new_pages > 0 or updated_pages > 0 or deleted_pages > 0 or skipped_pages > 0) and failed_uploads == 0 and drift_pages == 0:
+    if (new_pages > 0 or updated_pages > 0 or deleted_pages > 0 or skipped_pages > 0) and failed_uploads == 0:
         msg = "Dry run complete — no changes made to Notion." if dry_run else "All files synced successfully!"
         print(f"{GREEN}{msg}{RESET}")
 

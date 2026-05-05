@@ -12,7 +12,7 @@ import urllib.parse
 import requests
 
 from config import HEADERS, RED, YELLOW, GREEN, RESET
-from notion_api import session, REQUEST_TIMEOUT, _compute_notion_blocks_hash
+from notion_api import session, REQUEST_TIMEOUT
 from sync_state import state
 
 # ---------------------------------------------------------------------------
@@ -399,17 +399,16 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
             print(f"  Unchanged: {rel_path}")
             return
 
-        # Full check: fetch blocks and compare content fingerprint.
+        # Full check: fetch blocks and render to Markdown, then compare with local file.
         blocks = fetch_blocks_recursive(page_id)
-        current_notion_hash = _compute_notion_blocks_hash(blocks)
-        stored_notion_hash = state.get_notion_hash(rel_path)
+        new_md = f"# {page_title}\n\n" + blocks_to_md(blocks, dest_dir, page_title=page_title)
 
         if not os.path.exists(filepath):
             label, color = "create", GREEN
-        elif current_notion_hash == stored_notion_hash:
-            label, color = "unchanged", RESET
         else:
-            label, color = "update", YELLOW
+            with open(filepath, encoding="utf-8") as fh:
+                local_md = fh.read()
+            label, color = ("unchanged", RESET) if local_md == new_md else ("update", YELLOW)
 
         if stats is not None:
             stats[label] = stats.get(label, 0) + 1
@@ -422,16 +421,11 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
         else:
             print(f"{color}[dry] Would {label}: {rel_path}{RESET}")
             if show_diff and label == "update":
-                new_md = f"# {page_title}\n\n" + blocks_to_md(blocks, dest_dir, page_title=page_title)
-                with open(filepath, encoding="utf-8") as fh:
-                    old_md = fh.read()
-                diff_output = _format_diff(old_md, new_md, rel_path)
+                diff_output = _format_diff(local_md, new_md, rel_path)
                 if diff_output:
                     print(diff_output)
                 else:
                     print(f"  (content identical — block metadata only; --apply will reseed state)")
-                    if stored_notion_hash and current_notion_hash:
-                        print(f"    notion hash:  {stored_notion_hash[:8]} → {current_notion_hash[:8]}")
                     if stored_last_edited and last_edited_time and stored_last_edited != last_edited_time:
                         print(f"    last edited:  {stored_last_edited} → {last_edited_time}")
         return
@@ -463,10 +457,6 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
     state_key = os.path.relpath(filepath, base_dir)
     state.set_page_id(state_key, page_id)
     state.set_page_hash(state_key, content_hash)
-    # Seed the Notion-side fingerprint from the blocks just fetched.
-    # This establishes the baseline for remote drift detection: the next sync
-    # of this file can detect if Notion was edited between the pull and the push.
-    state.set_notion_hash(state_key, _compute_notion_blocks_hash(blocks))
     if last_edited_time is not None:
         state.set_notion_last_edited(state_key, last_edited_time)
 
