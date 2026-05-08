@@ -291,6 +291,71 @@ def blocks_to_md(blocks: list, page_dir: str, indent: int = 0, page_title: str =
 # Pull orchestration
 # ---------------------------------------------------------------------------
 
+_LINK_RE = re.compile(r'\[([^\]]+)\]\(([^)]+)\)')
+_UUID_PATH_RE = re.compile(r'^/?([0-9a-f]{32})$', re.IGNORECASE)
+_NOTION_URL_RE = re.compile(
+    r'https://www\.notion\.so/(?:[^/]+-)?([0-9a-f]{32})(?:\?.*)?$', re.IGNORECASE
+)
+
+
+def _slugify(text: str) -> str:
+    return re.sub(r'[^a-z0-9]+', '-', text.lower()).strip('-')
+
+
+def _resolve_local_links(md_content: str) -> str:
+    """Post-process pulled Markdown to rewrite Notion internal links as local .md filenames.
+
+    Notion stores intra-page links in several formats that are meaningless
+    outside Notion:
+      - UUID path:    /3139c23278f58070b2b8c625ebd154f7
+      - Notion URL:   https://www.notion.so/Page-Title-3139c23278f58070b2b8c625ebd154f7
+      - Kebab slug:   fraud-score-system.md
+
+    All are converted to URL-encoded local filenames: Fraud%20Score%20System.md
+    Unresolvable links are left untouched.
+    """
+    # Reverse lookup: normalized_page_id -> rel_path
+    id_to_relpath = {
+        _normalize_id(pid): rp
+        for rp, pid in state.all_pages().items()
+    }
+    # Slug lookup: slugified-title -> rel_path (for kebab-case fallback)
+    slug_to_relpath = {
+        _slugify(os.path.splitext(os.path.basename(rp))[0]): rp
+        for rp in id_to_relpath.values()
+    }
+
+    def _resolve(url: str) -> str | None:
+        # Case 1: bare UUID path
+        m = _UUID_PATH_RE.match(url)
+        if m:
+            rp = id_to_relpath.get(_normalize_id(m.group(1)))
+            if rp:
+                return urllib.parse.quote(os.path.basename(rp), safe='.')
+
+        # Case 2: full Notion URL
+        m = _NOTION_URL_RE.match(url)
+        if m:
+            rp = id_to_relpath.get(_normalize_id(m.group(1)))
+            if rp:
+                return urllib.parse.quote(os.path.basename(rp), safe='.')
+
+        # Case 3: kebab-case .md slug
+        if url.endswith('.md'):
+            stem = os.path.splitext(os.path.basename(url))[0]
+            rp = slug_to_relpath.get(_slugify(stem))
+            if rp:
+                return urllib.parse.quote(os.path.basename(rp), safe='.')
+
+        return None
+
+    def _repl(match):
+        text, url = match.group(1), match.group(2)
+        local = _resolve(url)
+        return f"[{text}]({local})" if local else match.group(0)
+
+    return _LINK_RE.sub(_repl, md_content)
+
 def _normalize_id(notion_id: str) -> str:
     """Normalize a Notion ID by removing hyphens for reliable comparison."""
     return notion_id.replace("-", "")
@@ -401,7 +466,9 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
 
         # Full check: fetch blocks and render to Markdown, then compare with local file.
         blocks = fetch_blocks_recursive(page_id)
-        new_md = f"# {page_title}\n\n" + blocks_to_md(blocks, dest_dir, page_title=page_title)
+        new_md = _resolve_local_links(
+            f"# {page_title}\n\n" + blocks_to_md(blocks, dest_dir, page_title=page_title)
+        )
 
         if not os.path.exists(filepath):
             label, color = "create", GREEN
@@ -440,7 +507,9 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
             return
 
     blocks = fetch_blocks_recursive(page_id)
-    md_content = f"# {page_title}\n\n" + blocks_to_md(blocks, dest_dir, page_title=page_title)
+    md_content = _resolve_local_links(
+        f"# {page_title}\n\n" + blocks_to_md(blocks, dest_dir, page_title=page_title)
+    )
 
     # Determine whether this is a create, update, or no-op before writing.
     if not os.path.exists(filepath):
