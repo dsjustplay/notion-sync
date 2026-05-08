@@ -298,8 +298,14 @@ def _is_empty_paragraph(block: dict) -> bool:
 
 
 def _append_structural(blocks: list, block: dict):
-    """Append a structural block, removing any trailing empty paragraph first."""
-    if blocks and _is_empty_paragraph(blocks[-1]):
+    """Append a structural block, removing all trailing empty paragraphs first.
+
+    Multiple consecutive blank lines in the source Markdown produce multiple
+    empty paragraph blocks.  Popping all of them (not just the last one)
+    ensures that no empty spacer paragraphs end up immediately before headings,
+    code blocks, dividers, images, tables, or list items in Notion.
+    """
+    while blocks and _is_empty_paragraph(blocks[-1]):
         blocks.pop()
     blocks.append(block)
 
@@ -399,15 +405,17 @@ def md_to_notion_blocks(md_content, base_path=".", dry_run=False):
                 else:
                     code_language = "plain text"
                     content = inner
-                for chunk in split_text_into_chunks(content):
-                    blocks.append({
+                chunks = split_text_into_chunks(content)
+                for i, chunk in enumerate(chunks):
+                    code_block = {
                         "object": "block",
                         "type": "code",
                         "code": {
                             "rich_text": [{"type": "text", "text": {"content": chunk}}],
                             "language": "plain text"
                         }
-                    })
+                    }
+                    _append_structural(blocks, code_block) if i == 0 else blocks.append(code_block)
                 continue  # Process next line.
             else:
                 if in_code_block:
@@ -415,15 +423,17 @@ def md_to_notion_blocks(md_content, base_path=".", dry_run=False):
                         code_text = "\n".join(code_lines)
                         if code_language.lower() not in SUPPORTED_LANGUAGES:
                             code_language = "plain text"
-                        for chunk in split_text_into_chunks(code_text):
-                            blocks.append({
+                        chunks = split_text_into_chunks(code_text)
+                        for i, chunk in enumerate(chunks):
+                            code_block = {
                                 "object": "block",
                                 "type": "code",
                                 "code": {
                                     "rich_text": [{"type": "text", "text": {"content": chunk}}],
                                     "language": code_language
                                 }
-                            })
+                            }
+                            _append_structural(blocks, code_block) if i == 0 else blocks.append(code_block)
                         in_code_block = False
                         code_lines = []
                         fence = None  # Reset the fence

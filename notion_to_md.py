@@ -213,8 +213,16 @@ def blocks_to_md(blocks: list, page_dir: str, indent: int = 0, page_title: str =
     indent     – nesting level for list items.
     page_title – title of the current page; child_page links are placed in a
                  sub-folder of this name so we need it to build correct relative paths.
+
+    Each entry in `entries` is a (text, is_list_item) tuple.  Consecutive list
+    items are joined with a single newline (tight lists) while all other block
+    boundaries use the standard double-newline Markdown paragraph separator.
     """
-    lines = []
+    # Each entry is (rendered_text, tight_group) where tight_group is a string
+    # key ("list" or "quote") or None.  Two adjacent entries with the same
+    # non-None tight_group are joined with \n (tight); all other boundaries
+    # use the standard \n\n paragraph separator.
+    entries: list[tuple[str, str | None]] = []
     prefix = "  " * indent
 
     for block in blocks:
@@ -224,55 +232,61 @@ def blocks_to_md(blocks: list, page_dir: str, indent: int = 0, page_title: str =
 
         if btype == "paragraph":
             text = rich_text_to_md(data.get("rich_text", []))
-            lines.append(f"{prefix}{text}" if text else "")
+            entries.append((f"{prefix}{text}" if text else "", None))
 
         elif btype in ("heading_1", "heading_2", "heading_3"):
             level = int(btype[-1])
             text = rich_text_to_md(data.get("rich_text", []))
-            lines.append(f"{'#' * level} {text}")
+            entries.append((f"{'#' * level} {text}", None))
 
         elif btype == "bulleted_list_item":
             text = rich_text_to_md(data.get("rich_text", []))
-            lines.append(f"{prefix}- {text}")
+            entries.append((f"{prefix}- {text}", "list"))
             if children:
-                lines.append(blocks_to_md(children, page_dir, indent + 1))
+                entries.append((blocks_to_md(children, page_dir, indent + 1), "list"))
 
         elif btype == "numbered_list_item":
             text = rich_text_to_md(data.get("rich_text", []))
-            lines.append(f"{prefix}1. {text}")
+            entries.append((f"{prefix}1. {text}", "list"))
             if children:
-                lines.append(blocks_to_md(children, page_dir, indent + 1))
+                entries.append((blocks_to_md(children, page_dir, indent + 1), "list"))
 
         elif btype == "to_do":
             checked = "x" if data.get("checked") else " "
             text = rich_text_to_md(data.get("rich_text", []))
-            lines.append(f"{prefix}- [{checked}] {text}")
+            entries.append((f"{prefix}- [{checked}] {text}", "list"))
             if children:
-                lines.append(blocks_to_md(children, page_dir, indent + 1))
+                entries.append((blocks_to_md(children, page_dir, indent + 1), "list"))
 
         elif btype == "code":
+            # Normalize Notion's default "plain text" language back to an empty
+            # fence so that ``` (no language) round-trips correctly.
             lang = data.get("language", "plain text")
+            if lang == "plain text":
+                lang = ""
             code = rich_text_to_md(data.get("rich_text", []))
-            lines.append(f"```{lang}\n{code}\n```")
+            entries.append((f"```{lang}\n{code}\n```", None))
 
         elif btype == "callout":
             text = rich_text_to_md(data.get("rich_text", []))
-            lines.append(f"> [callout]: {text}")
+            entries.append((f"> [callout]: {text}", None))
             if children:
-                lines.append(blocks_to_md(children, page_dir, indent + 1, page_title=page_title))
+                entries.append((blocks_to_md(children, page_dir, indent + 1, page_title=page_title), None))
 
         elif btype == "bookmark":
             url = data.get("url", "")
             if url:
-                lines.append(f"> [bookmark]: {url}")
+                entries.append((f"> [bookmark]: {url}", None))
             # else: empty bookmark, skip silently
 
         elif btype == "quote":
             text = rich_text_to_md(data.get("rich_text", []))
-            lines.append(f"> {text}")
+            # Consecutive quote lines share the "quote" tight group so that
+            # `> line1\n> line2` round-trips without extra blank lines between them.
+            entries.append((f"> {text}", "quote"))
 
         elif btype == "divider":
-            lines.append("---")
+            entries.append(("---", None))
 
         elif btype == "image":
             img = data
@@ -283,9 +297,9 @@ def blocks_to_md(blocks: list, page_dir: str, indent: int = 0, page_title: str =
             hint = _sanitise_filename(alt[:40]) or "image"
             local_path = download_image(url, page_dir, hint)
             if local_path:
-                lines.append(f"![{alt}]({local_path})")
+                entries.append((f"![{alt}]({local_path})", None))
             elif url:
-                lines.append(f"![{alt}]({url})")
+                entries.append((f"![{alt}]({url})", None))
 
         elif btype == "table":
             rows = [b for b in children if b.get("type") == "table_row"]
@@ -297,7 +311,7 @@ def blocks_to_md(blocks: list, page_dir: str, indent: int = 0, page_title: str =
                     table_lines.append("| " + " | ".join(cell_texts) + " |")
                     if i == 0:
                         table_lines.append("| " + " | ".join(["---"] * len(cells)) + " |")
-                lines.append("\n".join(table_lines))
+                entries.append(("\n".join(table_lines), None))
 
         elif btype == "child_page":
             # Skip — child pages are pulled as separate .md files by _pull_children.
@@ -306,14 +320,30 @@ def blocks_to_md(blocks: list, page_dir: str, indent: int = 0, page_title: str =
             pass
 
         else:
-            # Best-effort fallback for callouts, toggles, columns, etc.
+            # Best-effort fallback for toggles, columns, etc.
             rich = data.get("rich_text", [])
             text = rich_text_to_md(rich) if rich else f"[{btype}]"
-            lines.append(f"> [{btype}]: {text}")
+            entries.append((f"> [{btype}]: {text}", None))
             if children:
-                lines.append(blocks_to_md(children, page_dir, indent + 1))
+                entries.append((blocks_to_md(children, page_dir, indent + 1), None))
 
-    return "\n\n".join(line for line in lines if line is not None)
+    # Drop trailing empty entries (Notion pages often end with an empty
+    # spacer paragraph; keeping it would produce a spurious trailing \n\n).
+    while entries and not entries[-1][0].strip():
+        entries.pop()
+
+    # Smart join: same-group consecutive entries use \n; all other transitions
+    # use the standard \n\n Markdown paragraph separator.
+    result = ""
+    prev_group: str | None = None
+    for text, group in entries:
+        if result:
+            sep = "\n" if (group is not None and group == prev_group) else "\n\n"
+            result += sep + text
+        else:
+            result = text
+        prev_group = group
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -507,7 +537,7 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
         blocks = fetch_blocks_recursive(page_id)
         new_md = _resolve_local_links(
             f"# {page_title}\n\n" + blocks_to_md(blocks, dest_dir, page_title=page_title)
-        )
+        ) + "\n"
 
         if not os.path.exists(filepath):
             label, color = "create", GREEN
@@ -548,7 +578,7 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
     blocks = fetch_blocks_recursive(page_id)
     md_content = _resolve_local_links(
         f"# {page_title}\n\n" + blocks_to_md(blocks, dest_dir, page_title=page_title)
-    )
+    ) + "\n"
 
     # Determine whether this is a create, update, or no-op before writing.
     if not os.path.exists(filepath):
