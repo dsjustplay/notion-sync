@@ -429,12 +429,15 @@ def _delete_block(block_id: str):
 
 NOTION_BLOCK_LIMIT = 100
 
-def _insert_blocks_after(page_id: str, blocks: list, after_id: str | None) -> bool:
+def _insert_blocks_after(page_id: str, blocks: list, after_id: str | None):
     """Append blocks to a page, optionally after a specific block ID.
 
     Splits large payloads into sequential chunks of at most NOTION_BLOCK_LIMIT blocks
     to satisfy Notion's API limit. Each subsequent chunk is inserted after the last
     block of the previous chunk.
+
+    Returns True on success, "image_expired" if a stale file-upload ID is detected
+    (cache entry is evicted so the caller can retry), or False on other errors.
     """
     current_after_id = after_id
 
@@ -450,6 +453,15 @@ def _insert_blocks_after(page_id: str, blocks: list, after_id: str | None) -> bo
             headers=HEADERS,
         )
         if resp.status_code != 200:
+            if resp.status_code == 400:
+                body = resp.json()
+                if body.get("code") == "validation_error" and "expired" in body.get("message", ""):
+                    match = re.search(r"File upload ([0-9a-f-]{36})", body.get("message", ""))
+                    if match:
+                        expired_id = match.group(1)
+                        evict_by_upload_id(expired_id)
+                        print(f"{YELLOW}  Expired image upload evicted ({expired_id}). Will re-upload.{RESET}")
+                        return "image_expired"
             print(f"{RED}Failed to insert blocks: {resp.status_code} - {resp.text}{RESET}")
             return False
         results = resp.json().get("results", [])
@@ -546,15 +558,19 @@ def sync_page_blocks(page_id: str, existing_blocks: list, new_blocks: list,
                 _delete_block(block["id"])
 
         elif tag == "insert":
-            ok = _insert_blocks_after(page_id, _strip_block_metadata(new_blocks[j1:j2]), last_kept_id)
-            if not ok:
+            result = _insert_blocks_after(page_id, _strip_block_metadata(new_blocks[j1:j2]), last_kept_id)
+            if result == "image_expired":
+                return "image_expired"
+            if not result:
                 return "failed"
 
         elif tag == "replace":
             for block in existing_blocks[i1:i2]:
                 _delete_block(block["id"])
-            ok = _insert_blocks_after(page_id, _strip_block_metadata(new_blocks[j1:j2]), last_kept_id)
-            if not ok:
+            result = _insert_blocks_after(page_id, _strip_block_metadata(new_blocks[j1:j2]), last_kept_id)
+            if result == "image_expired":
+                return "image_expired"
+            if not result:
                 return "failed"
 
     return "updated"
@@ -1082,7 +1098,7 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
             else:
                 content_blocks = [b for b in existing_blocks if b.get("type") != "child_page"]
                 result = sync_page_blocks(existing_page_id, content_blocks, blocks, dry_run=dry_run)
-                if isinstance(result, tuple) and result[0] == "image_expired":
+                if result == "image_expired" or (isinstance(result, tuple) and result[0] == "image_expired"):
                     if not _retry:
                         print(f"{YELLOW}Retrying '{file_name}' after image re-upload…{RESET}")
                         return upload_markdown_file_to_notion(
