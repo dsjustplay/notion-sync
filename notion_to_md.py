@@ -664,6 +664,17 @@ def _pull_database(database_id: str, db_title: str, target_dir: str,
         for row in data.get("results", []):
             page_id = row["id"]
             row_last_edited = row.get("last_edited_time")
+
+            # Skip rows whose parent is another page (not the database itself).
+            # Notion's database query returns ALL pages in the database regardless
+            # of nesting, so a page that lives inside e.g. "User verification"
+            # would appear here as a flat row AND again via _pull_children.
+            # Skipping non-direct rows here lets _pull_children place them at
+            # the correct path in the folder hierarchy.
+            parent_type = row.get("parent", {}).get("type")
+            if parent_type != "database_id":
+                continue
+
             # Find the title property (type=="title")
             title = ""
             for prop in row.get("properties", {}).values():
