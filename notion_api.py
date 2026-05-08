@@ -8,6 +8,7 @@ from requests.adapters import HTTPAdapter
 from config import HEADERS, BLOCK_LIMIT, BASE_DIR, ROOT_IS_FILE, RED, YELLOW, GREEN, RESET
 from markdown_parser import md_to_notion_blocks
 from sync_state import state
+from image_uploader import evict_by_upload_id
 
 
 def _root_stem() -> str | None:
@@ -529,6 +530,9 @@ def sync_page_blocks(page_id: str, existing_blocks: list, new_blocks: list,
         print(f"{YELLOW}Insertion before first block detected; falling back to full page rewrite.{RESET}")
         delete_existing_content(page_id)
         result = upload_blocks_to_notion(page_id, _strip_block_metadata(new_blocks))
+        # Propagate image_expired tuple so the caller can retry.
+        if isinstance(result, tuple):
+            return result
         return result or "updated"
 
     last_kept_id: str | None = None
@@ -762,34 +766,40 @@ def delete_notion_page_if_missing(local_md_files, dry_run: bool = False):
 def delete_existing_content(page_id):
     """Delete all content blocks from an existing Notion page before updating."""
     url = f"https://api.notion.com/v1/blocks/{page_id}/children"
-    params = {"page_size": 100}
 
+    # Pass 1: collect all deletable block IDs so we know the total upfront.
+    block_ids = []
+    params = {"page_size": 100}
     while True:
         response = session.get(url, headers=HEADERS, params=params, timeout=REQUEST_TIMEOUT)
         if response.status_code != 200:
             print(f"{RED}Error fetching content for deletion: {response.status_code}, {response.text}{RESET}")
-            break
-
+            return
         data = response.json()
-        blocks = data.get("results", [])
-
-        # Delete each block in the current batch.
-        for block in blocks:
-            if block["object"] == "block" and block.get("id"):
-                if block.get("type") == "child_page":
-                    continue  # Never delete sub-pages
-                block_id = block.get("id")
-                del_response = session.delete(f"https://api.notion.com/v1/blocks/{block_id}", headers=HEADERS, timeout=REQUEST_TIMEOUT)
-                if del_response.status_code != 200:
-                    print(f"{RED}Failed to delete block {block_id}: {del_response.status_code} - {del_response.text}{RESET}")
-
-        # Check if there are more blocks.
+        for block in data.get("results", []):
+            if block["object"] == "block" and block.get("id") and block.get("type") != "child_page":
+                block_ids.append(block["id"])
         if data.get("has_more"):
             params["start_cursor"] = data.get("next_cursor")
         else:
             break
 
-    print(f"{YELLOW}Cleared old content from page (ID: {page_id}){RESET}")
+    total = len(block_ids)
+    if total == 0:
+        return
+
+    # Pass 2: delete with progress printed every 10 blocks.
+    print(f"  Clearing page… (0/{total} blocks)", end="", flush=True)
+    for i, block_id in enumerate(block_ids, start=1):
+        del_response = session.delete(
+            f"https://api.notion.com/v1/blocks/{block_id}", headers=HEADERS, timeout=REQUEST_TIMEOUT
+        )
+        if del_response.status_code != 200:
+            print(f"\n{RED}Failed to delete block {block_id}: {del_response.status_code} - {del_response.text}{RESET}")
+        if i % 10 == 0 or i == total:
+            print(f"\r  Clearing page… ({i}/{total} blocks)", end="", flush=True)
+    print()  # newline after progress line
+    print(f"{YELLOW}  Cleared {total} block(s).{RESET}")
 
 def create_or_update_notion_page(title, parent_id, blocks, is_folder=False):
     """Create a new Notion page or update an existing one if found."""
@@ -876,19 +886,40 @@ def get_or_create_folder_page(folder_path, dry_run: bool = False):
     return parent_id
 
 def upload_blocks_to_notion(page_id, blocks):
-    """Upload content blocks to Notion in chunks, ensuring no empty pages."""
+    """Upload content blocks to Notion in chunks, ensuring no empty pages.
+
+    Returns "updated" on success, "failed" on a non-recoverable error, or
+    ("image_expired", upload_id) when Notion rejects a stale file-upload ID so
+    the caller can evict the cache entry and retry.
+    """
     if not blocks:
         print(f"Skipping empty block upload for page (ID: {page_id})")
         return
 
-    for i in range(0, len(blocks), BLOCK_LIMIT):
+    total = len(blocks)
+    num_chunks = (total + BLOCK_LIMIT - 1) // BLOCK_LIMIT
+
+    for chunk_idx, i in enumerate(range(0, total, BLOCK_LIMIT), start=1):
+        chunk = blocks[i:i + BLOCK_LIMIT]
+        end = min(i + BLOCK_LIMIT, total)
+        print(f"  Uploading chunk {chunk_idx}/{num_chunks} (blocks {i + 1}–{end} of {total})…")
         response = session.patch(
             f"https://api.notion.com/v1/blocks/{page_id}/children",
-            json={"children": blocks[i:i + BLOCK_LIMIT]},
+            json={"children": chunk},
             headers=HEADERS,
-            timeout=REQUEST_TIMEOUT
+            timeout=REQUEST_TIMEOUT,
         )
         if response.status_code != 200:
+            # Detect an expired file-upload ID so the caller can recover.
+            if response.status_code == 400:
+                body = response.json()
+                if body.get("code") == "validation_error" and "expired" in body.get("message", ""):
+                    match = re.search(r"File upload ([0-9a-f-]{36})", body.get("message", ""))
+                    if match:
+                        expired_id = match.group(1)
+                        evict_by_upload_id(expired_id)
+                        print(f"{YELLOW}  Expired image upload evicted ({expired_id}). Will re-upload.{RESET}")
+                        return "image_expired", expired_id
             print(f"{RED}Error updating blocks: {response.status_code}, {response.text}{RESET}")
             return "failed"
 
@@ -897,7 +928,7 @@ def upload_blocks_to_notion(page_id, blocks):
 
 def upload_markdown_file_to_notion(file_path, update_content=False, new_content=None,
                                    dry_run: bool = False, raw_content: str | None = None,
-                                   force: bool = False):
+                                   force: bool = False, _retry: bool = False):
     """Upload a Markdown file as a Notion page inside its folder structure.
 
     If update_content is False, a minimal content is uploaded (or the page is created if missing).
@@ -905,6 +936,7 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
     changes are detected.
     In dry_run mode, computes all diffs and prints what would change, but makes no writes.
     If force is True, remote drift detection is skipped and the local version always wins.
+    _retry is set internally when recovering from an expired image upload; not for external callers.
     """
     file_name = os.path.basename(file_path)
     base_path = os.path.dirname(file_path)
@@ -1024,7 +1056,15 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
             # Fresh page (just created in Phase 1, no content yet) — upload directly,
             # no need to fetch or diff. Avoids 404s on newly created pages.
             if state.get_page_hash(state_key) is None and not dry_run:
-                upload_blocks_to_notion(existing_page_id, _strip_block_metadata(blocks))
+                result = upload_blocks_to_notion(existing_page_id, _strip_block_metadata(blocks))
+                if isinstance(result, tuple) and result[0] == "image_expired":
+                    if not _retry:
+                        print(f"{YELLOW}Retrying '{file_name}' after image re-upload…{RESET}")
+                        return upload_markdown_file_to_notion(
+                            file_path, update_content=True, new_content=new_content,
+                            dry_run=dry_run, raw_content=raw_content, force=force, _retry=True,
+                        )
+                    return ("failed", existing_page_id)
                 state.set_page_hash(state_key, current_hash)
                 state.save()
                 return ("updated", existing_page_id)
@@ -1041,8 +1081,16 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
                 # fall through to the creation block below
             else:
                 content_blocks = [b for b in existing_blocks if b.get("type") != "child_page"]
-                status = sync_page_blocks(existing_page_id, content_blocks, blocks, dry_run=dry_run)
-                if status == "failed":
+                result = sync_page_blocks(existing_page_id, content_blocks, blocks, dry_run=dry_run)
+                if isinstance(result, tuple) and result[0] == "image_expired":
+                    if not _retry:
+                        print(f"{YELLOW}Retrying '{file_name}' after image re-upload…{RESET}")
+                        return upload_markdown_file_to_notion(
+                            file_path, update_content=True, new_content=new_content,
+                            dry_run=dry_run, raw_content=raw_content, force=force, _retry=True,
+                        )
+                    return ("failed", existing_page_id)
+                if result == "failed":
                     return ("failed", existing_page_id)
                 if not dry_run:
                     state.set_page_hash(state_key, current_hash)

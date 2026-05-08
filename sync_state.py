@@ -122,6 +122,16 @@ class SyncState:
             "file_upload_id": file_upload_id,
         }
 
+    def remove_image(self, local_path: str):
+        self._data["images"].pop(local_path, None)
+
+    def find_image_by_upload_id(self, upload_id: str) -> str | None:
+        """Return the state_key (relative path) whose cached upload ID matches, or None."""
+        for key, entry in self._data["images"].items():
+            if entry.get("file_upload_id") == upload_id:
+                return key
+        return None
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------

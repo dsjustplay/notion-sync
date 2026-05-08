@@ -92,3 +92,16 @@ def upload_image_to_notion(image_path: str, dry_run: bool = False) -> tuple[str,
     state.save()
 
     return upload_id, False
+
+
+def evict_by_upload_id(upload_id: str) -> bool:
+    """Remove a stale/expired upload ID from the image cache.
+
+    Returns True if an entry was found and removed, False if the ID was not cached.
+    """
+    state_key = state.find_image_by_upload_id(upload_id)
+    if state_key is None:
+        return False
+    state.remove_image(state_key)
+    state.save()
+    return True
