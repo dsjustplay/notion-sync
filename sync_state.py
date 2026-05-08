@@ -50,9 +50,14 @@ class SyncState:
         self._data["pages"].pop(local_path, None)
 
     def find_page_by_notion_id(self, notion_id: str) -> str | None:
-        """Return the state_key (relative local path) whose notion_id matches, or None."""
+        """Return the state_key (relative local path) whose notion_id matches, or None.
+
+        Comparison is hyphen-insensitive so callers don't need to normalise first.
+        """
+        needle = notion_id.replace("-", "")
         for key, entry in self._data["pages"].items():
-            if entry.get("notion_id") == notion_id:
+            stored = (entry.get("notion_id") or "").replace("-", "")
+            if stored == needle:
                 return key
         return None
 

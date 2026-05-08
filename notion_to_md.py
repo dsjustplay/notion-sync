@@ -487,7 +487,7 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
     # to the existing local file when the filename and Notion title diverge
     # (e.g. local file is "Apple DeviceCheck.md" but Notion title is
     # "Apple DeviceCheck (iOS App Attest)").
-    stored_key = state.find_page_by_notion_id(_normalize_id(page_id))
+    stored_key = state.find_page_by_notion_id(page_id)
     if stored_key is not None and stored_key != rel_path:
         rel_path = stored_key
         filepath = os.path.join(base_dir, stored_key)
