@@ -76,6 +76,15 @@ def _parse_args():
         action="store_true",
         help="In dry-run mode, print a git-style unified diff for every page that would be updated.",
     )
+    pull_parser.add_argument(
+        "--only-changed",
+        action="store_true",
+        help=(
+            "Only pull pages that Notion has edited since the last sync, "
+            "leaving all other local files untouched. "
+            "Useful for resolving drift on a single page without overwriting local edits elsewhere."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -95,7 +104,7 @@ from notion_api import upload_markdown_file_to_notion, delete_notion_page_if_mis
 from markdown_parser import replace_md_links  # noqa: E402
 from config import RED, YELLOW, GREEN, RESET  # noqa: E402
 from sync_state import state  # noqa: E402
-from notion_to_md import pull_from_notion  # noqa: E402
+from notion_to_md import pull_from_notion, pull_only_changed  # noqa: E402
 
 def push_markdown_to_notion():
     """
@@ -271,12 +280,16 @@ if __name__ == "__main__":
             push_markdown_to_notion()
         elif _args.command == "pull":
             state.load()
-            root_id = _args.root_page_id or state.get_notion_root_page_id()
-            if not root_id:
-                print(f"{RED}Error: Notion root page ID is not set.{RESET}")
-                print("Pass it once with --root-page-id <PAGE_ID> and it will be saved for future runs.")
+            if _args.only_changed:
+                pull_only_changed(config.BASE_DIR, dry_run=not _args.apply,
+                                  show_diff=_args.diff and not _args.apply)
             else:
-                pull_from_notion(config.BASE_DIR, root_id, dry_run=not _args.apply,
-                                 show_diff=_args.diff and not _args.apply)
+                root_id = _args.root_page_id or state.get_notion_root_page_id()
+                if not root_id:
+                    print(f"{RED}Error: Notion root page ID is not set.{RESET}")
+                    print("Pass it once with --root-page-id <PAGE_ID> and it will be saved for future runs.")
+                else:
+                    pull_from_notion(config.BASE_DIR, root_id, dry_run=not _args.apply,
+                                     show_diff=_args.diff and not _args.apply)
     except KeyboardInterrupt:
         print(f"\n{RED}Aborted{RESET}")

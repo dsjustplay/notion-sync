@@ -414,7 +414,7 @@ def check_notion_drift(md_files: list, dry_run: bool = False) -> list:
         suggestion = "Run 'pull' to get the latest changes before syncing."
         if not dry_run:
             suggestion += " Use --force to overwrite Notion anyway."
-        print(f"{YELLOW}{suggestion}{RESET}")
+        print(f"{RED}{suggestion}{RESET}")
 
     return drifted
 

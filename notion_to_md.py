@@ -583,6 +583,68 @@ def _pull_database(database_id: str, db_title: str, target_dir: str,
             break
 
 
+def pull_only_changed(target_dir: str, dry_run: bool = False, show_diff: bool = False):
+    """Pull only pages that Notion has edited since the last sync.
+
+    Iterates over pages already tracked in sync_state.json, compares each
+    page's stored last_edited_time with the current value from Notion, and
+    pulls only those that differ.  All other local files are left untouched.
+
+    This is the right tool for resolving drift on one or a few pages without
+    overwriting local edits elsewhere.  It does NOT discover new pages added
+    in Notion — use a full pull for that.
+    """
+    mode = "DRY RUN — no files will be written." if dry_run else "Pulling only remotely-changed pages..."
+    print(f"{YELLOW if dry_run else GREEN}{mode}{RESET}\n")
+
+    pages = state.all_pages()  # {rel_path: page_id}
+    if not pages:
+        print(f"{YELLOW}No pages tracked in sync_state.json — run a full pull first.{RESET}")
+        return
+
+    stats: dict = {"changed": 0, "unchanged": 0, "no_baseline": 0}
+
+    for rel_path, page_id in pages.items():
+        stored_ts = state.get_notion_last_edited(rel_path)
+        if not stored_ts:
+            # No baseline timestamp — we can't tell whether it drifted.
+            print(f"  Skipping (no baseline): {rel_path}")
+            stats["no_baseline"] += 1
+            continue
+
+        _, notion_ts = _get_page_meta(page_id)
+        if not notion_ts:
+            print(f"{YELLOW}  Could not fetch timestamp for: {rel_path}{RESET}")
+            continue
+
+        if notion_ts == stored_ts:
+            stats["unchanged"] += 1
+            continue
+
+        # Timestamp differs — this page was edited in Notion.
+        page_title = os.path.splitext(os.path.basename(rel_path))[0]
+        dest_dir = os.path.join(target_dir, os.path.dirname(rel_path))
+        stats["changed"] += 1
+        _pull_page(page_id, page_title, dest_dir, target_dir,
+                   dry_run=dry_run, stats=None,
+                   last_edited_time=notion_ts, show_diff=show_diff)
+
+    if not dry_run:
+        state.save()
+
+    print(f"\n======{'Dry Run ' if dry_run else ''}Pull (changed only) Summary======")
+    print(f"Total tracked pages: {len(pages)}")
+    if stats["changed"]:
+        label = "[dry] Would update" if dry_run else "Updated"
+        print(f"{GREEN}{label}: {stats['changed']}{RESET}")
+    if stats["unchanged"]:
+        print(f"Unchanged: {stats['unchanged']}")
+    if stats["no_baseline"]:
+        print(f"{YELLOW}Skipped (no baseline): {stats['no_baseline']}{RESET}")
+    if dry_run:
+        print(f"{YELLOW}Dry run complete — no files written.{RESET}")
+
+
 def pull_from_notion(target_dir: str, root_id: str, dry_run: bool = False, show_diff: bool = False):
     """Entry point: pull a full Notion page tree or database into target_dir.
 
