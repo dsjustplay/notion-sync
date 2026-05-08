@@ -46,7 +46,7 @@ def upload_image_to_notion(image_path: str, dry_run: bool = False) -> tuple[str,
         return cached["file_upload_id"], True
 
     if dry_run:
-        print(f"{YELLOW}[dry] Would upload image: {os.path.basename(image_path)}{RESET}")
+        print(f"{GREEN}[dry] Would upload image: {os.path.basename(image_path)}{RESET}")
         return "dry-run-placeholder", False
 
     # Step 1: Create a File Upload object to get an upload URL + ID.

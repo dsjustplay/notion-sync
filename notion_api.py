@@ -866,7 +866,7 @@ def get_or_create_folder_page(folder_path, dry_run: bool = False):
                 parent_id = folder_id
             else:
                 if dry_run:
-                    print(f"{YELLOW}  [dry] Would create folder: {accumulated}{RESET}")
+                    print(f"{GREEN}  [dry] Would create folder: {accumulated}{RESET}")
                     continue
                 folder_id = create_or_update_notion_page(folder, parent_id, [], is_folder=True)
                 if folder_id:
@@ -1058,7 +1058,7 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
     if not existing_page_id:
         # Create a new page (title only — Phase 2 uploads the content).
         if dry_run:
-            print(f"{YELLOW}[dry] Would create: '{page_title}'{RESET}")
+            print(f"{GREEN}[dry] Would create: '{page_title}'{RESET}")
             return ("created", None)
 
         print(f"{GREEN}Creating new Notion page: {page_title}{RESET}")
