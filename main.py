@@ -157,6 +157,15 @@ def push_markdown_to_notion():
     # On first run, populate state by walking the existing Notion tree.
     reconcile_state(md_files)
 
+    # Pre-flight drift check: warn (dry-run) or abort (apply) if any pages that
+    # would be pushed have been independently edited in Notion since the last pull.
+    # Must run BEFORE Phase 1 so that creating new child pages (which updates the
+    # parent's last_edited_time) does not trigger a false-positive drift alarm.
+    if not force:
+        drifted = check_notion_drift(md_files, dry_run=dry_run)
+        if drifted and not dry_run:
+            return  # abort before any writes
+
     # Archive Notion pages corresponding to markdown files that no longer exist.
     deleted_pages = delete_notion_page_if_missing(md_files, dry_run=dry_run)
     if deleted_pages:
@@ -201,13 +210,6 @@ def push_markdown_to_notion():
             print(f"Mapped {filename} -> {notion_url}")
         elif not dry_run:
             print(f"{RED}Warning: No page ID returned for {md_file}.{RESET}")
-
-    # Pre-flight drift check: warn (dry-run) or abort (apply) if any pages that
-    # would be pushed have been independently edited in Notion since the last pull.
-    if not force:
-        drifted = check_notion_drift(md_files, dry_run=dry_run)
-        if drifted and not dry_run:
-            return  # abort before any writes
 
     # Phase 2: Sync page content (diff and patch existing pages).
     for md_file in md_files:
