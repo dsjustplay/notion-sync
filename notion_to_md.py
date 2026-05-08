@@ -614,6 +614,15 @@ def pull_only_changed(target_dir: str, dry_run: bool = False, show_diff: bool = 
 
         _, notion_ts = _get_page_meta(page_id)
         if not notion_ts:
+            # Fallback: the stored ID may be a database (e.g. the database root page).
+            resp = session.get(
+                f"https://api.notion.com/v1/databases/{page_id}",
+                headers=HEADERS,
+                timeout=REQUEST_TIMEOUT,
+            )
+            if resp.status_code == 200:
+                notion_ts = resp.json().get("last_edited_time")
+        if not notion_ts:
             print(f"{YELLOW}  Could not fetch timestamp for: {rel_path}{RESET}")
             continue
 
