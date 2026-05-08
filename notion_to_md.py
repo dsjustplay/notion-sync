@@ -482,6 +482,16 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
     filepath = os.path.join(dest_dir, filename)
     rel_path = os.path.relpath(filepath, base_dir)
 
+    # If this page ID is already tracked in state, use the stored local path
+    # instead of the one derived from the Notion title. This keeps pull anchored
+    # to the existing local file when the filename and Notion title diverge
+    # (e.g. local file is "Apple DeviceCheck.md" but Notion title is
+    # "Apple DeviceCheck (iOS App Attest)").
+    stored_key = state.find_page_by_notion_id(_normalize_id(page_id))
+    if stored_key is not None and stored_key != rel_path:
+        rel_path = stored_key
+        filepath = os.path.join(base_dir, stored_key)
+
     if dry_run:
         stored_last_edited = state.get_notion_last_edited(rel_path)
 

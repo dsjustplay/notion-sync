@@ -49,6 +49,13 @@ class SyncState:
     def remove_page(self, local_path: str):
         self._data["pages"].pop(local_path, None)
 
+    def find_page_by_notion_id(self, notion_id: str) -> str | None:
+        """Return the state_key (relative local path) whose notion_id matches, or None."""
+        for key, entry in self._data["pages"].items():
+            if entry.get("notion_id") == notion_id:
+                return key
+        return None
+
     def all_pages(self) -> dict:
         """Returns {local_path: notion_id} for all tracked pages."""
         return {k: v["notion_id"] for k, v in self._data["pages"].items()}
