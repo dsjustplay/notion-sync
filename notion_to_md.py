@@ -55,10 +55,14 @@ def rich_text_to_md(rich_text: list) -> str:
         content = token.get("text", {}).get("content", "")
         link = token.get("text", {}).get("link")
 
-        # Skip Notion integration prompts, e.g. the "Connect" hyperlink that
-        # Notion appends after GitHub / Jira URLs when the integration is not
-        # configured.  The token always has content == "Connect" and a link.
+        # Skip Notion integration prompts.  When an integration (GitHub, Jira,
+        # etc.) is not connected, Notion injects two tokens after the real URL:
+        #   1. A linked "Connect" token  (content == "Connect", has a link)
+        #   2. A plain " your <Service> account" tail (no link)
+        # Both must be dropped to avoid mangled output.
         if content == "Connect" and link:
+            continue
+        if not link and content.strip().startswith("your ") and "account" in content:
             continue
 
         ann = token.get("annotations", {})
@@ -81,7 +85,13 @@ def rich_text_to_md(rich_text: list) -> str:
                 content = f"*{content}*"
 
         if link:
-            content = f"[{content}]({link['url']})"
+            # Notion appends "Connect" to the href of the URL token preceding
+            # the integration prompt (e.g. "https://github.com/repoConnect").
+            # Strip it so the rendered link points to the real URL.
+            url = link["url"]
+            if url.endswith("Connect") and not content.endswith("Connect"):
+                url = url[: -len("Connect")]
+            content = f"[{content}]({url})"
 
         result += content
     return result
