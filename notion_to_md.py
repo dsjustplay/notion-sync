@@ -20,11 +20,47 @@ from sync_state import state
 # ---------------------------------------------------------------------------
 
 def rich_text_to_md(rich_text: list) -> str:
-    """Convert a Notion rich_text array to a Markdown inline string."""
+    """Convert a Notion rich_text array to a Markdown inline string.
+
+    Handles three token types:
+    - ``text``    — plain / formatted text, optionally with a hyperlink.
+    - ``mention`` — Notion mentions (Jira tickets, page refs, users, dates).
+                    Uses ``plain_text`` + ``href`` from the token envelope.
+    - anything else — falls back to ``plain_text`` so content is never lost.
+
+    Integration prompts ("Connect your Github account" etc.) are filtered out:
+    Notion injects a ``text`` token with content ``"Connect"`` and a link
+    immediately after any URL from an unconnected integration.  Keeping that
+    token produces mangled output like ``[urlConnect](urlConnect)``.
+    """
     result = ""
     for token in rich_text:
+        token_type = token.get("type", "text")
+
+        # --- mention tokens (Jira, page ref, user, date, link_preview) ---
+        if token_type == "mention":
+            plain = token.get("plain_text", "")
+            href = token.get("href")
+            if href and plain:
+                result += f"[{plain}]({href})"
+            else:
+                result += plain
+            continue
+
+        # --- non-text, non-mention tokens: use plain_text as safe fallback ---
+        if token_type != "text":
+            result += token.get("plain_text", "")
+            continue
+
         content = token.get("text", {}).get("content", "")
         link = token.get("text", {}).get("link")
+
+        # Skip Notion integration prompts, e.g. the "Connect" hyperlink that
+        # Notion appends after GitHub / Jira URLs when the integration is not
+        # configured.  The token always has content == "Connect" and a link.
+        if content == "Connect" and link:
+            continue
+
         ann = token.get("annotations", {})
 
         bold = ann.get("bold", False)
