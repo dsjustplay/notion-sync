@@ -42,7 +42,7 @@ def upload_image_to_notion(image_path: str, dry_run: bool = False) -> tuple[str,
     cached = state.get_image(state_key)
 
     if cached and cached.get("sha256") == current_hash:
-        print(f"{YELLOW}Image unchanged, reusing upload: {os.path.basename(image_path)}{RESET}")
+        print(f"{GREEN}Image unchanged, reusing upload: {os.path.basename(image_path)}{RESET}")
         return cached["file_upload_id"], True
 
     if dry_run:
