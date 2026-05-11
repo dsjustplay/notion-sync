@@ -536,7 +536,7 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
         # Full check: fetch blocks and render to Markdown, then compare with local file.
         blocks = fetch_blocks_recursive(page_id)
         new_md = _resolve_local_links(
-            f"# {page_title}\n\n" + blocks_to_md(blocks, dest_dir, page_title=page_title)
+            f"# {page_title}\n\n" + blocks_to_md(blocks, dest_dir, page_title=page_title).rstrip()
         ) + "\n"
 
         if not os.path.exists(filepath):
@@ -577,7 +577,7 @@ def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
 
     blocks = fetch_blocks_recursive(page_id)
     md_content = _resolve_local_links(
-        f"# {page_title}\n\n" + blocks_to_md(blocks, dest_dir, page_title=page_title)
+        f"# {page_title}\n\n" + blocks_to_md(blocks, dest_dir, page_title=page_title).rstrip()
     ) + "\n"
 
     # Determine whether this is a create, update, or no-op before writing.
