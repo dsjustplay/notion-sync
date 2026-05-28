@@ -246,6 +246,12 @@ docker run --rm -e NOTION_TOKEN=<token> \
   ghcr.io/dsjustplay/notion-sync \
   push /workspace
 
+# Dry-run push with line-level diffs for changed pages
+docker run --rm -e NOTION_TOKEN=<token> \
+  -v /full/path/to/docs:/workspace \
+  ghcr.io/dsjustplay/notion-sync \
+  push /workspace --diff
+
 # Apply push
 docker run --rm -e NOTION_TOKEN=<token> \
   -v /full/path/to/docs:/workspace \
@@ -277,6 +283,9 @@ python main.py pull <docs_dir> --diff
 # Preview what would be pushed (dry run — default, no Notion changes)
 # Also runs the drift pre-flight check and warns about any Notion-side edits.
 python main.py push <docs_dir> [--root-is-file]
+
+# Preview with line-level diffs for changed pages
+python main.py push <docs_dir> --diff
 
 # Everyday push (CI or pre-merge) — actually push to Notion
 # Aborts before any write if drift is detected; see Drift detection above.

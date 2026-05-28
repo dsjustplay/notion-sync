@@ -51,6 +51,11 @@ def _parse_args():
             "skipped with a warning so no manual edits are silently lost."
         ),
     )
+    sync_parser.add_argument(
+        "--diff",
+        action="store_true",
+        help="In dry-run mode, print a git-style unified diff for every page that would be updated. Ignored in apply mode.",
+    )
 
     # -- pull subcommand (download Notion → local) ----------------------------
     pull_parser = subparsers.add_parser(
@@ -116,6 +121,7 @@ def push_markdown_to_notion():
     start_time = time.time()
     dry_run = not _args.apply
     force = _args.force
+    show_diff = _args.diff and dry_run
 
     if dry_run:
         print(f"{YELLOW}DRY RUN — no changes will be made to Notion.{RESET}\n")
@@ -183,7 +189,7 @@ def push_markdown_to_notion():
     dry_run_new = set()  # Track new pages so Phase 2 doesn't report them again.
 
     for md_file in md_files:
-        result = upload_markdown_file_to_notion(md_file, update_content=False, dry_run=dry_run)
+        result = upload_markdown_file_to_notion(md_file, update_content=False, dry_run=dry_run, show_diff=show_diff)
         if isinstance(result, tuple):
             status, page_id = result
         else:
@@ -225,7 +231,8 @@ def push_markdown_to_notion():
         updated_content = replace_md_links(md_content, md_to_notion)
         result = upload_markdown_file_to_notion(md_file, update_content=True,
                                                 new_content=updated_content, dry_run=dry_run,
-                                                raw_content=md_content, force=force)
+                                                raw_content=md_content, force=force,
+                                                show_diff=show_diff)
         if isinstance(result, tuple):
             status, _ = result
         else:

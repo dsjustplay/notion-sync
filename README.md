@@ -96,7 +96,7 @@ cp sync_state.json.example <docs_dir>/sync_state.json
 The tool has two subcommands:
 
 ```sh
-python main.py push <docs_dir> [--root-page-id PAGE_ID] [--apply] [--root-is-file] [--force]
+python main.py push <docs_dir> [--root-page-id PAGE_ID] [--apply] [--root-is-file] [--force] [--diff]
 python main.py pull <target_dir> [--root-page-id PAGE_ID] [--apply] [--diff]
 ```
 
@@ -109,12 +109,16 @@ python main.py pull <target_dir> [--root-page-id PAGE_ID] [--apply] [--diff]
 | `docs_dir` | Always | Path to the folder containing Markdown files to push |
 | `--root-page-id` | First run only | Notion page ID to push under; saved to `sync_state.json` for subsequent runs |
 | `--apply` | Optional | Actually write changes to Notion. Without this flag the command is a dry run — nothing is changed. |
+| `--diff` | Optional | In dry-run mode, print a git-style unified diff for every page that would be updated. Ignored in apply mode. |
 | `--root-is-file` | Optional | Write the single root `.md` file's content directly to the target page instead of creating a child page for it (see [Root-is-file](#root-is-file)) |
 | `--force` | Optional | Overwrite Notion even when remote drift is detected (Notion was edited directly since last push). Without this flag, drifted pages are skipped with a warning. |
 
 ```sh
 # Preview what would be pushed (dry run — default, no changes made)
 python main.py push <docs_dir> --root-page-id YOUR_PAGE_ID
+
+# Preview with line-level diffs for changed pages
+python main.py push <docs_dir> --diff
 
 # Actually push changes to Notion
 python main.py push <docs_dir> --root-page-id YOUR_PAGE_ID --apply

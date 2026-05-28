@@ -9,6 +9,7 @@ from config import HEADERS, BLOCK_LIMIT, BASE_DIR, ROOT_IS_FILE, RED, YELLOW, GR
 from markdown_parser import md_to_notion_blocks
 from sync_state import state
 from image_uploader import evict_by_upload_id
+from utils import format_diff
 
 
 def _root_stem() -> str | None:
@@ -490,13 +491,15 @@ def _is_child_page_link_paragraph(block: dict, child_page_titles: set) -> bool:
 
 
 def sync_page_blocks(page_id: str, existing_blocks: list, new_blocks: list,
-                     dry_run: bool = False) -> str:
+                     dry_run: bool = False, show_diff: bool = False) -> str:
     """Apply a minimal diff between existing Notion blocks and new blocks.
 
     Unchanged blocks keep their Notion IDs (preserving comments/reactions).
     Only changed, inserted, or deleted blocks are touched.
     Returns 'updated' or 'failed'.
     In dry_run mode, computes and prints the diff but makes no API calls.
+    When show_diff is True the block-count summary is suppressed because the
+    caller already printed a richer text-level diff.
 
     child_page blocks are always excluded from both sides of the diff: they are
     Notion-owned structural elements that we must never delete or replace.
@@ -529,13 +532,14 @@ def sync_page_blocks(page_id: str, existing_blocks: list, new_blocks: list,
     )
 
     if dry_run:
-        if needs_insert_at_start:
-            print(f"{YELLOW}  [dry] Would rewrite full page ({len(new_blocks)} blocks){RESET}")
-        else:
-            keep   = sum(i2 - i1 for tag, i1, i2, j1, j2 in ops if tag == "equal")
-            delete = sum(i2 - i1 for tag, i1, i2, j1, j2 in ops if tag in ("delete", "replace"))
-            insert = sum(j2 - j1 for tag, i1, i2, j1, j2 in ops if tag in ("insert", "replace"))
-            print(f"{YELLOW}  [dry] diff — keep: {keep}, delete: {delete}, insert: {insert}{RESET}")
+        if not show_diff:
+            if needs_insert_at_start:
+                print(f"{YELLOW}  [dry] Would rewrite full page ({len(new_blocks)} blocks){RESET}")
+            else:
+                keep   = sum(i2 - i1 for tag, i1, i2, j1, j2 in ops if tag == "equal")
+                delete = sum(i2 - i1 for tag, i1, i2, j1, j2 in ops if tag in ("delete", "replace"))
+                insert = sum(j2 - j1 for tag, i1, i2, j1, j2 in ops if tag in ("insert", "replace"))
+                print(f"{YELLOW}  [dry] diff — keep: {keep}, delete: {delete}, insert: {insert}{RESET}")
         return "updated"
 
     if needs_insert_at_start:
@@ -999,16 +1003,27 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
             if first_text.strip() == root_stem:
                 blocks = blocks[1:]
 
-        print(f"{YELLOW}Page '{file_name}' content has changed. Syncing to root page...{RESET}")
+        action = "[dry] Would sync to root page" if dry_run else "Syncing to root page"
+        print(f"{YELLOW}Page '{file_name}' content has changed. {action}...{RESET}")
         existing_blocks = get_existing_page_content(root_page_id)
         if existing_blocks is None:
             if not dry_run:
                 upload_blocks_to_notion(root_page_id, _strip_block_metadata(blocks))
         else:
+            if dry_run and show_diff:
+                from notion_to_md import blocks_to_md  # lazy import — avoids circular dep at module level
+                content_blocks = [b for b in existing_blocks if b.get("type") != "child_page"]
+                notion_md = f"# {root_stem}\n\n" + blocks_to_md(content_blocks, base_path) if root_stem else blocks_to_md(content_blocks, base_path)
+                local_md = raw_content if raw_content is not None else md_content
+                diff_output = format_diff(notion_md, local_md, state_key)
+                if diff_output:
+                    print(diff_output)
+                else:
+                    print(f"  (content identical at text level — block metadata only)")
             # Pass the full block list — sync_page_blocks now handles child_page
             # filtering internally (it extracts titles and strips the matching
             # link-only paragraphs from the local side too).
-            sync_page_blocks(root_page_id, existing_blocks, blocks, dry_run=dry_run)
+            sync_page_blocks(root_page_id, existing_blocks, blocks, dry_run=dry_run, show_diff=show_diff)
         if not dry_run:
             state.set_page_hash(state_key, current_hash)
             new_ts = _fetch_notion_last_edited(root_page_id)
@@ -1097,13 +1112,23 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
                 # fall through to the creation block below
             else:
                 content_blocks = [b for b in existing_blocks if b.get("type") != "child_page"]
-                result = sync_page_blocks(existing_page_id, content_blocks, blocks, dry_run=dry_run)
+                if dry_run and show_diff:
+                    from notion_to_md import blocks_to_md  # lazy import — avoids circular dep at module level
+                    notion_md = f"# {page_title}\n\n" + blocks_to_md(content_blocks, base_path)
+                    local_md = raw_content if raw_content is not None else md_content
+                    diff_output = format_diff(notion_md, local_md, state_key)
+                    if diff_output:
+                        print(diff_output)
+                    else:
+                        print(f"  (content identical at text level — block metadata only)")
+                result = sync_page_blocks(existing_page_id, content_blocks, blocks, dry_run=dry_run, show_diff=show_diff)
                 if result == "image_expired" or (isinstance(result, tuple) and result[0] == "image_expired"):
                     if not _retry:
                         print(f"{YELLOW}Retrying '{file_name}' after image re-upload…{RESET}")
                         return upload_markdown_file_to_notion(
                             file_path, update_content=True, new_content=new_content,
-                            dry_run=dry_run, raw_content=raw_content, force=force, _retry=True,
+                            dry_run=dry_run, raw_content=raw_content, force=force,
+                            show_diff=show_diff, _retry=True,
                         )
                     return ("failed", existing_page_id)
                 if result == "failed":

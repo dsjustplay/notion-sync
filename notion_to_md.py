@@ -4,7 +4,6 @@ notion_to_md.py — Download a Notion page tree and convert it to local Markdown
 Entry point: pull_from_notion(target_dir, root_page_id)
 """
 
-import difflib
 import hashlib
 import os
 import re
@@ -14,6 +13,7 @@ import requests
 from config import HEADERS, RED, YELLOW, GREEN, RESET
 from notion_api import session, REQUEST_TIMEOUT
 from sync_state import state
+from utils import format_diff as _format_diff
 
 # ---------------------------------------------------------------------------
 # Inline rich_text → Markdown
@@ -453,41 +453,6 @@ def _page_title(page_id: str) -> str:
     title_prop = props.get("title", {})
     rich = title_prop.get("title", [])
     return rich_text_to_md(rich) or page_id
-
-
-_BOLD  = "\033[1m"
-_CYAN  = "\033[36m"
-
-def _format_diff(old_text: str, new_text: str, filepath: str) -> str:
-    """Return a coloured unified diff string (git-style) comparing old to new.
-
-    Header lines (--- / +++) are bold, @@ hunk lines are cyan,
-    removed lines are red, added lines are green.
-    Returns an empty string when there are no differences.
-    """
-    old_lines = old_text.splitlines(keepends=True)
-    new_lines = new_text.splitlines(keepends=True)
-    diff = list(difflib.unified_diff(
-        old_lines, new_lines,
-        fromfile=f"a/{filepath}",
-        tofile=f"b/{filepath}",
-        lineterm="",
-    ))
-    if not diff:
-        return ""
-    coloured = []
-    for line in diff:
-        if line.startswith("---") or line.startswith("+++"):
-            coloured.append(f"{_BOLD}{line}{RESET}")
-        elif line.startswith("@@"):
-            coloured.append(f"{_CYAN}{line}{RESET}")
-        elif line.startswith("-"):
-            coloured.append(f"{RED}{line}{RESET}")
-        elif line.startswith("+"):
-            coloured.append(f"{GREEN}{line}{RESET}")
-        else:
-            coloured.append(line)
-    return "\n".join(coloured)
 
 
 def _pull_page(page_id: str, page_title: str, dest_dir: str, base_dir: str,
