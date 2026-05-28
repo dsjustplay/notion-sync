@@ -948,14 +948,16 @@ def upload_blocks_to_notion(page_id, blocks):
 
 def upload_markdown_file_to_notion(file_path, update_content=False, new_content=None,
                                    dry_run: bool = False, raw_content: str | None = None,
-                                   force: bool = False, _retry: bool = False):
+                                   force: bool = False, show_diff: bool = False,
+                                   _retry: bool = False):
     """Upload a Markdown file as a Notion page inside its folder structure.
 
     If update_content is False, a minimal content is uploaded (or the page is created if missing).
-    If update_content is True, then the file’s content is used, converted to Notion blocks, and the page is updated if
+    If update_content is True, then the file's content is used, converted to Notion blocks, and the page is updated if
     changes are detected.
     In dry_run mode, computes all diffs and prints what would change, but makes no writes.
     If force is True, remote drift detection is skipped and the local version always wins.
+    If show_diff is True and dry_run is True, prints a git-style unified diff for each changed page.
     _retry is set internally when recovering from an expired image upload; not for external callers.
     """
     file_name = os.path.basename(file_path)
