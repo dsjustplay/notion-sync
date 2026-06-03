@@ -693,7 +693,9 @@ def get_existing_page_content(page_id):
                 timeout=REQUEST_TIMEOUT,
             )
             if rows_resp.status_code == 200:
-                block.setdefault("table", {})["children"] = rows_resp.json().get("results", [])
+                rows = rows_resp.json().get("results", [])
+                block.setdefault("table", {})["children"] = rows  # for _block_fingerprint
+                block["_children"] = rows  # for blocks_to_md
 
     return all_blocks
 
