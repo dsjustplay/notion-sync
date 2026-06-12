@@ -345,6 +345,16 @@ def _block_fingerprint(block: dict) -> str:
         lang = block_data.get("language", "plain text")
         return f"code:{lang}:{text}"
 
+    if btype in ("bulleted_list_item", "numbered_list_item", "to_do"):
+        # Include nested children in the fingerprint so that changes to sub-items
+        # are visible to the diff.  Both parser-generated blocks (children embedded
+        # under block_data["children"]) and Notion-fetched blocks enriched by
+        # get_existing_page_content store children in the same place.
+        children = block_data.get("children", [])
+        if children:
+            children_fp = "|".join(_block_fingerprint(c) for c in children)
+            return f"{btype}:{text}[{children_fp}]"
+
     return f"{btype}:{text}"
 
 
@@ -654,6 +664,40 @@ def search_existing_page(title, parent_id):
 
     return None  # No existing page found
 
+
+LIST_ITEM_TYPES = ("bulleted_list_item", "numbered_list_item", "to_do")
+
+
+def _enrich_list_children(block: dict):
+    """Recursively fetch and embed children for a list item block.
+
+    Notion's GET /blocks/{id}/children only returns top-level blocks.  Nested
+    list items live as children of their parent list block and must be fetched
+    with a separate API call.  This mirrors what get_existing_page_content
+    already does for table blocks, extending the same treatment to list items
+    so that _block_fingerprint can detect changes anywhere in the nesting tree.
+    """
+    btype = block.get("type")
+    if btype not in LIST_ITEM_TYPES:
+        return
+
+    resp = session.get(
+        f"https://api.notion.com/v1/blocks/{block['id']}/children",
+        headers=HEADERS,
+        timeout=REQUEST_TIMEOUT,
+    )
+    if resp.status_code != 200:
+        return
+
+    children = resp.json().get("results", [])
+    block.setdefault(btype, {})["children"] = children
+
+    # Recurse into any list-item children that themselves have children.
+    for child in children:
+        if child.get("type") in LIST_ITEM_TYPES and child.get("has_children"):
+            _enrich_list_children(child)
+
+
 def get_existing_page_content(page_id):
     """Fetch the current content of a Notion page (all blocks, paginated).
 
@@ -685,6 +729,9 @@ def get_existing_page_content(page_id):
             break
 
     # Enrich table blocks with their row children so fingerprinting is content-aware.
+    # Enrich list item blocks with their nested children for the same reason — changes
+    # to sub-items are otherwise invisible to the diff because only top-level blocks
+    # are returned by the Notion children endpoint.
     for block in all_blocks:
         if block.get("type") == "table":
             rows_resp = session.get(
@@ -696,6 +743,8 @@ def get_existing_page_content(page_id):
                 rows = rows_resp.json().get("results", [])
                 block.setdefault("table", {})["children"] = rows  # for _block_fingerprint
                 block["_children"] = rows  # for blocks_to_md
+        elif block.get("type") in ("bulleted_list_item", "numbered_list_item", "to_do") and block.get("has_children"):
+            _enrich_list_children(block)
 
     return all_blocks
 
@@ -1087,22 +1136,6 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
 
             action = "[dry] Would sync" if dry_run else "Syncing"
             print(f"{YELLOW}Page '{file_name}' content has changed. {action}...{RESET}")
-
-            # Fresh page (just created in Phase 1, no content yet) — upload directly,
-            # no need to fetch or diff. Avoids 404s on newly created pages.
-            if state.get_page_hash(state_key) is None and not dry_run:
-                result = upload_blocks_to_notion(existing_page_id, _strip_block_metadata(blocks))
-                if isinstance(result, tuple) and result[0] == "image_expired":
-                    if not _retry:
-                        print(f"{YELLOW}Retrying '{file_name}' after image re-upload…{RESET}")
-                        return upload_markdown_file_to_notion(
-                            file_path, update_content=True, new_content=new_content,
-                            dry_run=dry_run, raw_content=raw_content, force=force, _retry=True,
-                        )
-                    return ("failed", existing_page_id)
-                state.set_page_hash(state_key, current_hash)
-                state.save()
-                return ("updated", existing_page_id)
 
             existing_blocks = get_existing_page_content(existing_page_id)
 
