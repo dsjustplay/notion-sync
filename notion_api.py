@@ -8,7 +8,7 @@ from requests.adapters import HTTPAdapter
 from config import HEADERS, BLOCK_LIMIT, BASE_DIR, ROOT_IS_FILE, RED, YELLOW, GREEN, RESET
 from markdown_parser import md_to_notion_blocks
 from sync_state import state
-from image_uploader import evict_by_upload_id
+from image_uploader import evict_by_upload_id, upload_image_to_notion
 from utils import format_diff
 
 
@@ -997,6 +997,24 @@ def upload_blocks_to_notion(page_id, blocks):
     print(f"{GREEN}Successfully updated Notion page (ID: {page_id}){RESET}")
     return "updated"
 
+
+def _preview_new_page_images(file_path: str) -> None:
+    """In dry-run, list images that would be uploaded for a newly created page."""
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception:
+        return
+    base_path = os.path.dirname(file_path)
+    for m in re.finditer(r'!\[.*?\]\(([^)]+)\)', content):
+        raw = m.group(1).strip()
+        if raw.startswith(("http://", "https://")):
+            continue
+        abs_path = os.path.normpath(os.path.join(base_path, raw))
+        if os.path.exists(abs_path):
+            upload_image_to_notion(abs_path, dry_run=True)
+
+
 def upload_markdown_file_to_notion(file_path, update_content=False, new_content=None,
                                    dry_run: bool = False, raw_content: str | None = None,
                                    force: bool = False, show_diff: bool = False,
@@ -1185,6 +1203,7 @@ def upload_markdown_file_to_notion(file_path, update_content=False, new_content=
         # Create a new page (title only — Phase 2 uploads the content).
         if dry_run:
             print(f"{GREEN}[dry] Would create: '{page_title}'{RESET}")
+            _preview_new_page_images(file_path)
             return ("created", None)
 
         print(f"{GREEN}Creating new Notion page: {page_title}{RESET}")
