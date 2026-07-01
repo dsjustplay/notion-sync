@@ -998,21 +998,36 @@ def upload_blocks_to_notion(page_id, blocks):
     return "updated"
 
 
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
+
+
 def _preview_new_page_images(file_path: str) -> None:
-    """In dry-run, list images that would be uploaded for a newly created page."""
+    """In dry-run, list local assets referenced by a newly created page.
+
+    Images are reported via upload_image_to_notion (shows cache status).
+    Other local files (e.g. .mmd) are listed as plain references.
+    """
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
     except Exception:
         return
     base_path = os.path.dirname(file_path)
-    for m in re.finditer(r'!\[.*?\]\(([^)]+)\)', content):
+    seen = set()
+    # Match both image syntax ![...](path) and plain links [text](path).
+    for m in re.finditer(r'!?\[.*?\]\(([^)]+)\)', content):
         raw = m.group(1).strip()
         if raw.startswith(("http://", "https://")):
             continue
         abs_path = os.path.normpath(os.path.join(base_path, raw))
-        if os.path.exists(abs_path):
+        if abs_path in seen or not os.path.exists(abs_path):
+            continue
+        seen.add(abs_path)
+        ext = os.path.splitext(abs_path)[1].lower()
+        if ext in _IMAGE_EXTS:
             upload_image_to_notion(abs_path, dry_run=True)
+        else:
+            print(f"  [dry] Would reference local file: {os.path.basename(abs_path)}")
 
 
 def upload_markdown_file_to_notion(file_path, update_content=False, new_content=None,
